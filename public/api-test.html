@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyPlopPlop API Test Panel</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #0A1628; color: #fff; padding: 20px; }
+        h1 { color: #D21034; margin-bottom: 20px; font-size: 24px; }
+        h2 { color: #00209F; margin: 20px 0 10px; font-size: 18px; }
+        .card { background: #1a2840; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+        input, select, button { padding: 10px 14px; border-radius: 8px; border: 1px solid #334; font-size: 14px; margin: 4px 2px; }
+        input, select { background: #0d1b2e; color: #fff; width: 200px; }
+        button { background: #D21034; color: #fff; border: none; cursor: pointer; font-weight: 600; }
+        button:hover { background: #b00e2c; }
+        button.blue { background: #00209F; }
+        button.green { background: #1a8c3f; }
+        .result { background: #0d1b2e; border-radius: 8px; padding: 12px; margin-top: 8px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+        .status { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .status.ok { background: #1a8c3f; }
+        .status.err { background: #D21034; }
+        .token-display { font-size: 11px; color: #666; word-break: break-all; }
+        .flex { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .badge { background: #00209F; padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <h1>MyPlopPlop API Test Panel</h1>
+    <div class="card">
+        <div class="flex">
+            <span>API:</span>
+            <input id="apiUrl" value="" placeholder="API URL" style="width:400px">
+            <button onclick="testHealth()">Test Connection</button>
+            <span id="healthStatus"></span>
+        </div>
+    </div>
+
+    <h2>1. Authentication</h2>
+    <div class="card">
+        <h3 style="margin-bottom:8px">Register</h3>
+        <div class="flex">
+            <input id="regName" placeholder="Name" value="Jean Pierre">
+            <input id="regPhone" placeholder="Phone" value="+50937100001">
+            <input id="regPass" placeholder="Password" value="test123">
+            <select id="regRole"><option value="customer">Customer</option><option value="driver">Driver</option><option value="admin">Admin</option></select>
+            <button onclick="register()">Register</button>
+        </div>
+        <div id="regResult" class="result" style="display:none"></div>
+    </div>
+    <div class="card">
+        <h3 style="margin-bottom:8px">Login</h3>
+        <div class="flex">
+            <input id="loginPhone" placeholder="Phone" value="+50937100001">
+            <input id="loginPass" placeholder="Password" value="test123">
+            <button onclick="login()">Login</button>
+        </div>
+        <div class="flex" style="margin-top:8px">
+            <span>Token:</span> <span id="tokenDisplay" class="token-display">Not logged in</span>
+        </div>
+        <div id="loginResult" class="result" style="display:none"></div>
+    </div>
+
+    <h2>2. Driver Management</h2>
+    <div class="card">
+        <div class="flex">
+            <button onclick="driverOnboard()">Submit Driver Application</button>
+            <button class="blue" onclick="driverGoOnline()">Go Online</button>
+            <button onclick="driverGoOffline()" style="background:#666">Go Offline</button>
+            <button class="blue" onclick="driverStats()">My Stats</button>
+        </div>
+        <div id="driverResult" class="result" style="display:none"></div>
+    </div>
+
+    <h2>3. Admin Panel</h2>
+    <div class="card">
+        <div class="flex">
+            <button class="green" onclick="adminDashboard()">Dashboard</button>
+            <button class="blue" onclick="adminPendingDrivers()">Pending Drivers</button>
+            <button class="green" onclick="adminApproveFirst()">Approve First Pending</button>
+            <button class="blue" onclick="adminAllRides()">All Rides</button>
+            <button onclick="adminTransactions()">Transactions</button>
+        </div>
+        <div id="adminResult" class="result" style="display:none"></div>
+    </div>
+
+    <h2>4. Rides & Deliveries</h2>
+    <div class="card">
+        <h3 style="margin-bottom:8px">Create Order</h3>
+        <div class="flex">
+            <select id="rideType"><option value="delivery">Delivery</option><option value="ride">Ride</option></select>
+            <input id="pickupAddr" placeholder="Pickup address" value="Delmas 33">
+            <input id="dropoffAddr" placeholder="Dropoff address" value="Petion-Ville">
+            <input id="distanceKm" placeholder="Distance (km)" value="4.5" style="width:100px">
+            <select id="payMethod">
+                <option value="moncash">MonCash</option>
+                <option value="natcash">NatCash</option>
+                <option value="cashpaw">CashPaw</option>
+                <option value="card">Card</option>
+                <option value="cash">Cash</option>
+            </select>
+            <button onclick="createRide()">Order Now</button>
+        </div>
+        <div id="rideResult" class="result" style="display:none"></div>
+    </div>
+    <div class="card">
+        <h3 style="margin-bottom:8px">Ride Actions</h3>
+        <div class="flex">
+            <input id="rideId" placeholder="Ride ID" style="width:250px">
+            <button class="green" onclick="acceptRide()">Accept (Driver)</button>
+            <button class="blue" onclick="updateStatus('picking_up')">Picking Up</button>
+            <button class="blue" onclick="updateStatus('in_progress')">In Progress</button>
+            <button class="green" onclick="updateStatus('delivered')">Delivered!</button>
+            <button onclick="cancelRide()" style="background:#666">Cancel</button>
+        </div>
+        <div class="flex" style="margin-top:8px">
+            <button class="blue" onclick="myRides()">My Rides</button>
+            <button onclick="availableRides()">Available Rides</button>
+            <button class="green" onclick="rateRide()">Rate 5 Stars</button>
+        </div>
+        <div id="rideActionResult" class="result" style="display:none"></div>
+    </div>
+
+    <script>
+        let token = '';
+        const getApi = () => document.getElementById('apiUrl').value || window.location.origin;
+
+        // Auto-detect API URL
+        document.getElementById('apiUrl').value = window.location.origin;
+
+        async function api(method, path, body = null) {
+            const opts = {
+                method,
+                headers: { 'Authorization': `Bearer ${token}` }
+            };
+            if (body && !(body instanceof FormData)) {
+                opts.headers['Content-Type'] = 'application/json';
+                opts.body = JSON.stringify(body);
+            } else if (body) {
+                opts.body = body;
+            }
+            const res = await fetch(getApi() + path, opts);
+            return await res.json();
+        }
+
+        function show(id, data) {
+            const el = document.getElementById(id);
+            el.style.display = 'block';
+            el.textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function testHealth() {
+            try {
+                const data = await api('GET', '/api/health');
+                document.getElementById('healthStatus').innerHTML = '<span class="status ok">Connected!</span>';
+            } catch(e) {
+                document.getElementById('healthStatus').innerHTML = '<span class="status err">Failed</span>';
+            }
+        }
+
+        async function register() {
+            const data = await api('POST', '/api/auth/register', {
+                name: document.getElementById('regName').value,
+                phone: document.getElementById('regPhone').value,
+                password: document.getElementById('regPass').value,
+                role: document.getElementById('regRole').value
+            });
+            if (data.token) { token = data.token; document.getElementById('tokenDisplay').textContent = token.substring(0,40)+'...'; }
+            show('regResult', data);
+        }
+
+        async function login() {
+            const data = await api('POST', '/api/auth/login', {
+                phone: document.getElementById('loginPhone').value,
+                password: document.getElementById('loginPass').value
+            });
+            if (data.token) { token = data.token; document.getElementById('tokenDisplay').textContent = token.substring(0,40)+'...'; }
+            show('loginResult', data);
+        }
+
+        async function driverOnboard() {
+            const fd = new FormData();
+            fd.append('vehicleType', 'moto');
+            fd.append('vehiclePlate', 'AA-'+Math.floor(Math.random()*9000+1000));
+            fd.append('vehicleModel', 'Honda CG 150');
+            fd.append('vehicleColor', 'Rouge');
+            fd.append('licenseNumber', 'DL-'+Math.floor(Math.random()*9000+1000));
+            fd.append('services', JSON.stringify(['delivery','ride']));
+            const data = await api('POST', '/api/drivers/onboard', fd);
+            show('driverResult', data);
+        }
+
+        async function driverGoOnline() { show('driverResult', await api('PUT', '/api/drivers/online', {isOnline:true})); }
+        async function driverGoOffline() { show('driverResult', await api('PUT', '/api/drivers/online', {isOnline:false})); }
+        async function driverStats() { show('driverResult', await api('GET', '/api/drivers/stats')); }
+
+        async function adminDashboard() { show('adminResult', await api('GET', '/api/admin/dashboard')); }
+        async function adminPendingDrivers() { show('adminResult', await api('GET', '/api/admin/drivers?status=pending')); }
+        async function adminAllRides() { show('adminResult', await api('GET', '/api/admin/rides')); }
+        async function adminTransactions() { show('adminResult', await api('GET', '/api/admin/transactions')); }
+
+        async function adminApproveFirst() {
+            const pending = await api('GET', '/api/admin/drivers?status=pending');
+            if (pending.drivers && pending.drivers.length > 0) {
+                const data = await api('PUT', `/api/admin/drivers/${pending.drivers[0]._id}/verify`, {action:'approve'});
+                show('adminResult', data);
+            } else {
+                show('adminResult', {message: 'No pending drivers'});
+            }
+        }
+
+        async function createRide() {
+            const data = await api('POST', '/api/rides', {
+                type: document.getElementById('rideType').value,
+                pickup: { address: document.getElementById('pickupAddr').value },
+                dropoff: { address: document.getElementById('dropoffAddr').value },
+                distanceKm: parseFloat(document.getElementById('distanceKm').value),
+                paymentMethod: document.getElementById('payMethod').value
+            });
+            if (data.ride) document.getElementById('rideId').value = data.ride._id;
+            show('rideResult', data);
+        }
+
+        async function acceptRide() { show('rideActionResult', await api('PUT', `/api/rides/${document.getElementById('rideId').value}/accept`)); }
+        async function updateStatus(s) { show('rideActionResult', await api('PUT', `/api/rides/${document.getElementById('rideId').value}/status`, {status:s})); }
+        async function cancelRide() { show('rideActionResult', await api('PUT', `/api/rides/${document.getElementById('rideId').value}/cancel`, {reason:'Test cancel'})); }
+        async function myRides() { show('rideActionResult', await api('GET', '/api/rides')); }
+        async function availableRides() { show('rideActionResult', await api('GET', '/api/rides/available')); }
+        async function rateRide() { show('rideActionResult', await api('PUT', `/api/rides/${document.getElementById('rideId').value}/rate`, {rating:5})); }
+
+        // Auto test on load
+        testHealth();
+    </script>
+</body>
+</html>
