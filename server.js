@@ -25,8 +25,11 @@ const io = new Server(server, {
 });
 app.set('io', io);
 
-// Security
-app.use(helmet());
+// Security - relaxed CSP for test panel
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
+}));
 
 // Rate limiting
 const limiter = rateLimit({

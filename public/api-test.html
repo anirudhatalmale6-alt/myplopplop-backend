@@ -123,10 +123,15 @@
 
     <script>
         let token = '';
-        const getApi = () => document.getElementById('apiUrl').value || window.location.origin;
+        const getApi = () => {
+            const v = document.getElementById('apiUrl').value.trim();
+            if (v) return v.replace(/\/$/, '');
+            return window.location.origin;
+        };
 
         // Auto-detect API URL
         document.getElementById('apiUrl').value = window.location.origin;
+        document.getElementById('apiUrl').placeholder = window.location.origin;
 
         async function api(method, path, body = null) {
             const opts = {
@@ -151,10 +156,15 @@
 
         async function testHealth() {
             try {
+                document.getElementById('healthStatus').innerHTML = '<span class="status" style="background:#666">Testing...</span>';
                 const data = await api('GET', '/api/health');
-                document.getElementById('healthStatus').innerHTML = '<span class="status ok">Connected!</span>';
+                if (data.status === 'ok') {
+                    document.getElementById('healthStatus').innerHTML = '<span class="status ok">Connected! API v' + data.version + '</span>';
+                } else {
+                    document.getElementById('healthStatus').innerHTML = '<span class="status err">Unexpected response</span>';
+                }
             } catch(e) {
-                document.getElementById('healthStatus').innerHTML = '<span class="status err">Failed</span>';
+                document.getElementById('healthStatus').innerHTML = '<span class="status err">Failed: ' + e.message + '</span>';
             }
         }
 
