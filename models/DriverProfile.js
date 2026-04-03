@@ -75,6 +75,18 @@ const driverProfileSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Virtual: driver grade based on rating + rides
+driverProfileSchema.virtual('grade').get(function() {
+  var totalTrips = this.totalRides + this.totalDeliveries;
+  if (this.rating >= 4.8 && totalTrips >= 100) return { tier: 'Elite', badge: 'gold', color: '#f59e0b' };
+  if (this.rating >= 4.5 && totalTrips >= 50) return { tier: 'Pro', badge: 'silver', color: '#6b7280' };
+  if (this.rating >= 4.0 && totalTrips >= 10) return { tier: 'Verified', badge: 'blue', color: '#3b82f6' };
+  return { tier: 'New', badge: 'green', color: '#10b981' };
+});
+
+driverProfileSchema.set('toJSON', { virtuals: true });
+driverProfileSchema.set('toObject', { virtuals: true });
+
 driverProfileSchema.index({ currentLocation: '2dsphere' });
 driverProfileSchema.index({ status: 1, isOnline: 1 });
 

@@ -17,6 +17,7 @@ const rideRoutes = require('./routes/rides');
 const adminRoutes = require('./routes/admin');
 const paymentRoutes = require('./routes/payments');
 const referralRoutes = require('./routes/referrals');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 const server = http.createServer(app);
@@ -56,6 +57,7 @@ app.use('/api/rides', rideRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/referrals', referralRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -99,6 +101,25 @@ io.on('connection', (socket) => {
       rideId: data.rideId,
       latitude: data.latitude,
       longitude: data.longitude
+    });
+  });
+
+  // Chat: send message via socket (alternative to REST)
+  socket.on('chat_message', (data) => {
+    io.to(`ride_${data.rideId}`).emit('new_message', {
+      sender: { _id: data.senderId, name: data.senderName },
+      senderRole: data.senderRole,
+      message: data.message,
+      type: 'text',
+      createdAt: new Date()
+    });
+  });
+
+  // Chat: typing indicator
+  socket.on('typing', (data) => {
+    socket.to(`ride_${data.rideId}`).emit('user_typing', {
+      name: data.name,
+      role: data.role
     });
   });
 

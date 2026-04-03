@@ -131,6 +131,7 @@ router.get('/stats', protect, authorize('driver'), async (req, res) => {
         totalDeliveries: profile.totalDeliveries,
         totalEarnings: profile.totalEarnings,
         rating: profile.rating,
+        grade: profile.grade,
         status: profile.status,
         isOnline: profile.isOnline
       }
