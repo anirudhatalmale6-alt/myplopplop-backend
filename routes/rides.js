@@ -168,6 +168,28 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
         status: 'completed',
         description: `Commission (25%) from ${ride.type}`
       });
+
+      // Referral bonus: 2.5% of fare to referrer
+      const driver = await User.findById(req.user._id);
+      if (driver && driver.referredBy) {
+        const referralBonus = Math.round(ride.fare.total * 0.025);
+        if (referralBonus > 0) {
+          await User.findByIdAndUpdate(driver.referredBy, {
+            $inc: {
+              'wallet.balance': referralBonus,
+              referralEarnings: referralBonus
+            }
+          });
+          await Transaction.create({
+            user: driver.referredBy,
+            ride: ride._id,
+            type: 'referral',
+            amount: referralBonus,
+            status: 'completed',
+            description: `Referral bonus (2.5%) from ${driver.name}'s ${ride.type}`
+          });
+        }
+      }
     }
     if (status === 'cancelled') {
       ride.cancelledAt = new Date();

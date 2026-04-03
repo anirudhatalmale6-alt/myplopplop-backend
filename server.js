@@ -16,6 +16,7 @@ const driverRoutes = require('./routes/drivers');
 const rideRoutes = require('./routes/rides');
 const adminRoutes = require('./routes/admin');
 const paymentRoutes = require('./routes/payments');
+const referralRoutes = require('./routes/referrals');
 
 const app = express();
 const server = http.createServer(app);
@@ -54,6 +55,7 @@ app.use('/api/drivers', driverRoutes);
 app.use('/api/rides', rideRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/referrals', referralRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
