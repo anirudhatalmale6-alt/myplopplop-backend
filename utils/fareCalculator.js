@@ -22,7 +22,7 @@ function calculateFare(type, distanceKm) {
   const rawFare = rate.baseFare + (rate.perKm * distanceKm);
   const totalFare = Math.max(rawFare, rate.minFare);
   const commission = Math.round(totalFare * COMMISSION_RATE);
-  const driverEarning = totalFare - commission;
+  const driverEarning = Math.round(totalFare - commission);
 
   return {
     totalFare: Math.round(totalFare),

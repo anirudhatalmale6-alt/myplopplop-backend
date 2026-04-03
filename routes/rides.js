@@ -233,17 +233,19 @@ router.put('/:id/rate', protect, async (req, res) => {
 
     if (ride.customer.toString() === req.user._id.toString()) {
       ride.driverRating = rating;
+      await ride.save();
       // Update driver's average rating
       const driverRides = await Ride.find({ driver: ride.driver, driverRating: { $exists: true, $ne: null } });
-      const avgRating = driverRides.reduce((sum, r) => sum + r.driverRating, 0) / driverRides.length;
-      await DriverProfile.findOneAndUpdate({ user: ride.driver }, { rating: Math.round(avgRating * 10) / 10 });
-    } else if (ride.driver.toString() === req.user._id.toString()) {
+      if (driverRides.length > 0) {
+        const avgRating = driverRides.reduce((sum, r) => sum + r.driverRating, 0) / driverRides.length;
+        await DriverProfile.findOneAndUpdate({ user: ride.driver }, { rating: Math.round(avgRating * 10) / 10 });
+      }
+    } else if (ride.driver && ride.driver.toString() === req.user._id.toString()) {
       ride.customerRating = rating;
+      await ride.save();
     } else {
       return res.status(403).json({ success: false, message: 'Not part of this ride' });
     }
-
-    await ride.save();
     res.json({ success: true, ride });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

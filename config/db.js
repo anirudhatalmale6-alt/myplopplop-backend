@@ -4,8 +4,8 @@ const connectDB = async () => {
   try {
     let uri = process.env.MONGODB_URI;
 
-    // Use in-memory MongoDB for development if no real URI provided
-    if (!uri || uri.includes('cluster0.mongodb.net')) {
+    // Use in-memory MongoDB for local development only
+    if (process.env.NODE_ENV !== 'production' && (!uri || uri.includes('cluster0.mongodb.net'))) {
       const { MongoMemoryServer } = require('mongodb-memory-server');
       const mongod = await MongoMemoryServer.create();
       uri = mongod.getUri();
