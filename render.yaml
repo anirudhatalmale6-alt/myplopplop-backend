@@ -5,6 +5,7 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: node server.js
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
@@ -18,3 +19,9 @@ services:
         value: "0.25"
       - key: FRONTEND_URL
         value: https://myplopplop.com
+      - key: VAPID_PUBLIC_KEY
+        value: BN1SE28WVAyfAVPaD978xZ-60fmKAIuvgne68rm3D98ygY53e1W_bLpN0pCAOdRqQLC-AiGxnPTq9EgmfcuIguc
+      - key: VAPID_PRIVATE_KEY
+        value: fWX1XSiB2viQdeEgbMiCMywYEBVlGNlLITERLCyNAa0
+      - key: VAPID_EMAIL
+        value: mailto:info@myplopplop.com
