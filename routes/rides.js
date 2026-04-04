@@ -6,6 +6,7 @@ const Transaction = require('../models/Transaction');
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const { calculateFare } = require('../utils/fareCalculator');
+const { sendPushToUser } = require('./notifications');
 
 const router = express.Router();
 
@@ -93,13 +94,16 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
       .populate('customer', 'name phone')
       .populate('driver', 'name phone');
 
-    // Notify customer
+    // Notify customer via socket + push
     if (req.app.get('io')) {
       req.app.get('io').to(`ride_${ride._id}`).emit('ride_accepted', {
         rideId: ride._id,
         driver: { name: req.user.name, phone: req.user.phone }
       });
     }
+    sendPushToUser(ride.customer, 'Driver Found!', req.user.name + ' is on the way to pick you up', {
+      url: '/rides-tracking.html?id=' + ride._id
+    }).catch(() => {});
 
     res.json({ success: true, ride: populated });
   } catch (error) {
@@ -205,6 +209,19 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
         rideId: ride._id,
         status: ride.status
       });
+    }
+
+    // Push notification to customer on status change
+    const pushMessages = {
+      picking_up: { title: 'Driver En Route', body: 'Your driver is heading to pick you up' },
+      in_progress: { title: 'Ride Started', body: 'You are on your way to your destination' },
+      delivered: { title: 'Ride Complete', body: 'You have arrived! Please rate your driver' },
+      cancelled: { title: 'Ride Cancelled', body: 'Your ride has been cancelled' }
+    };
+    if (pushMessages[status]) {
+      sendPushToUser(ride.customer, pushMessages[status].title, pushMessages[status].body, {
+        url: status === 'delivered' ? '/rides-tracking.html?id=' + ride._id : '/orders.html'
+      }).catch(() => {});
     }
 
     res.json({ success: true, ride });

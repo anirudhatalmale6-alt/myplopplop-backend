@@ -3,6 +3,7 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const ChatMessage = require('../models/ChatMessage');
 const Ride = require('../models/Ride');
+const { sendPushToUser } = require('./notifications');
 
 // ─── Get chat messages for a ride ───
 // GET /api/chat/:rideId
@@ -80,6 +81,14 @@ router.post('/:rideId', protect, async (req, res) => {
         type: chatMsg.type,
         createdAt: chatMsg.createdAt
       });
+    }
+
+    // Send push notification to the other party
+    const recipientId = senderRole === 'driver' ? ride.customer : ride.driver;
+    if (recipientId) {
+      sendPushToUser(recipientId, 'New Message - PlopPlop', chatMsg.message, {
+        url: '/rides-chat.html?id=' + ride._id
+      }).catch(() => {});
     }
 
     res.json({ success: true, chatMessage: chatMsg });

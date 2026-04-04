@@ -18,6 +18,7 @@ const adminRoutes = require('./routes/admin');
 const paymentRoutes = require('./routes/payments');
 const referralRoutes = require('./routes/referrals');
 const chatRoutes = require('./routes/chat');
+const notificationRoutes = require('./routes/notifications');
 
 const app = express();
 const server = http.createServer(app);
@@ -58,6 +59,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
