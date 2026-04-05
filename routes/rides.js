@@ -173,10 +173,10 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
         description: `Commission (25%) from ${ride.type}`
       });
 
-      // Referral bonus: 2.5% of fare to referrer
+      // Referral bonus: 2% of fare to referrer
       const driver = await User.findById(req.user._id);
       if (driver && driver.referredBy) {
-        const referralBonus = Math.round(ride.fare.total * 0.025);
+        const referralBonus = Math.round(ride.fare.total * 0.02);
         if (referralBonus > 0) {
           await User.findByIdAndUpdate(driver.referredBy, {
             $inc: {
@@ -190,7 +190,7 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
             type: 'referral',
             amount: referralBonus,
             status: 'completed',
-            description: `Referral bonus (2.5%) from ${driver.name}'s ${ride.type}`
+            description: `Referral bonus (2%) from ${driver.name}'s ${ride.type}`
           });
         }
       }

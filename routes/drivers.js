@@ -19,7 +19,17 @@ router.post('/onboard', protect, upload.fields([
       return res.status(400).json({ success: false, message: 'Driver profile already exists' });
     }
 
-    const { vehicleType, vehiclePlate, vehicleModel, vehicleColor, licenseNumber, services } = req.body;
+    const { vehicleType, vehiclePlate, vehicleModel, vehicleColor, licenseNumber, services, referralCode } = req.body;
+
+    // Apply referral code if provided during driver onboarding
+    if (referralCode) {
+      const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+      if (referrer) {
+        await User.findByIdAndUpdate(req.user._id, { referredBy: referrer._id });
+        referrer.referralCount = (referrer.referralCount || 0) + 1;
+        await referrer.save();
+      }
+    }
 
     const profile = await DriverProfile.create({
       user: req.user._id,

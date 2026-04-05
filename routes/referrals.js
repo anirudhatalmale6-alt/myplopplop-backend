@@ -84,7 +84,7 @@ router.post('/apply', protect, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Referral code applied! ' + referrer.name + ' will earn 2.5% of commission on your rides.',
+      message: 'Referral code applied! ' + referrer.name + ' will earn 2% commission on your rides.',
       referrerName: referrer.name
     });
   } catch (error) {

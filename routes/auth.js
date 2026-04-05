@@ -17,7 +17,7 @@ router.post('/register', [
   }
 
   try {
-    const { name, phone, email, password, role, language, isDiaspora, country } = req.body;
+    const { name, phone, email, password, role, language, isDiaspora, country, referralCode } = req.body;
 
     // Check if phone already exists
     const existing = await User.findOne({ phone });
@@ -25,12 +25,24 @@ router.post('/register', [
       return res.status(400).json({ success: false, message: 'Phone number already registered' });
     }
 
+    // Look up referrer if referral code provided
+    let referredBy = null;
+    if (referralCode) {
+      const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+      if (referrer) {
+        referredBy = referrer._id;
+        referrer.referralCount = (referrer.referralCount || 0) + 1;
+        await referrer.save();
+      }
+    }
+
     const user = await User.create({
       name, phone, email, password,
       role: role || 'customer',
       language: language || 'fr',
       isDiaspora: isDiaspora || false,
-      country
+      country,
+      referredBy
     });
 
     const token = user.getSignedJwtToken();
