@@ -173,10 +173,12 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
         description: `Commission (25%) from ${ride.type}`
       });
 
-      // Referral bonus: 2% of fare to referrer
+      // Ambassador referral bonus
+      // 5% for business/marketplace referrals, 2% for driver referrals
       const driver = await User.findById(req.user._id);
       if (driver && driver.referredBy) {
-        const referralBonus = Math.round(ride.fare.total * 0.02);
+        const referralRate = 0.02; // 2% for drivers
+        const referralBonus = Math.round(ride.fare.total * referralRate);
         if (referralBonus > 0) {
           await User.findByIdAndUpdate(driver.referredBy, {
             $inc: {
@@ -190,8 +192,32 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
             type: 'referral',
             amount: referralBonus,
             status: 'completed',
-            description: `Referral bonus (2%) from ${driver.name}'s ${ride.type}`
+            description: `Ambassador bonus (2% driver) from ${driver.name}'s ${ride.type}`
           });
+        }
+      }
+
+      // Business referral: 5% of order total to ambassador who referred the business
+      if (ride.type === 'delivery' && ride.store) {
+        const store = await User.findById(ride.store);
+        if (store && store.referredBy) {
+          const bizReferralBonus = Math.round(ride.fare.total * 0.05);
+          if (bizReferralBonus > 0) {
+            await User.findByIdAndUpdate(store.referredBy, {
+              $inc: {
+                'wallet.balance': bizReferralBonus,
+                referralEarnings: bizReferralBonus
+              }
+            });
+            await Transaction.create({
+              user: store.referredBy,
+              ride: ride._id,
+              type: 'referral',
+              amount: bizReferralBonus,
+              status: 'completed',
+              description: `Ambassador bonus (5% business) from ${store.name}'s order`
+            });
+          }
         }
       }
     }
