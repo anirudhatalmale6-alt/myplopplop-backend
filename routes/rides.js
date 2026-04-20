@@ -173,49 +173,43 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
         description: `Commission (25%) from ${ride.type}`
       });
 
-      // Ambassador referral bonus - 10% across the board
+      // Ambassador referral bonus - MyPlopPlop platform fees
+      // 10% of platform fees, only for first 3 months per referred account, with payout cap
       const driver = await User.findById(req.user._id);
       if (driver && driver.referredBy) {
-        const referralRate = 0.10; // 10% across the board
-        const referralBonus = Math.round(ride.fare.total * referralRate);
-        if (referralBonus > 0) {
-          await User.findByIdAndUpdate(driver.referredBy, {
-            $inc: {
-              'wallet.balance': referralBonus,
-              referralEarnings: referralBonus
-            }
-          });
-          await Transaction.create({
-            user: driver.referredBy,
-            ride: ride._id,
-            type: 'referral',
-            amount: referralBonus,
-            status: 'completed',
-            description: `Ambassador bonus (2% driver) from ${driver.name}'s ${ride.type}`
-          });
-        }
-      }
+        const referredAt = driver.referredAt || driver.createdAt;
+        const threeMonthsAgo = new Date();
+        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+        const withinWindow = referredAt > threeMonthsAgo;
 
-      // Business referral: 5% of order total to ambassador who referred the business
-      if (ride.type === 'delivery' && ride.store) {
-        const store = await User.findById(ride.store);
-        if (store && store.referredBy) {
-          const bizReferralBonus = Math.round(ride.fare.total * 0.05);
-          if (bizReferralBonus > 0) {
-            await User.findByIdAndUpdate(store.referredBy, {
-              $inc: {
-                'wallet.balance': bizReferralBonus,
-                referralEarnings: bizReferralBonus
-              }
-            });
-            await Transaction.create({
-              user: store.referredBy,
-              ride: ride._id,
-              type: 'referral',
-              amount: bizReferralBonus,
-              status: 'completed',
-              description: `Ambassador bonus (5% business) from ${store.name}'s order`
-            });
+        if (withinWindow) {
+          const referrer = await User.findById(driver.referredBy);
+          if (referrer) {
+            // Check payout cap for this referred account
+            const platformFeeAmount = ride.fare.commission; // platform's commission portion
+            const referralBonus = Math.round(platformFeeAmount * 0.10); // 10% of platform fees
+            const cap = referrer.referralPayoutCap || 500;
+            const currentPlatformEarnings = referrer.referralEarningsPlatform || 0;
+            const remainingCap = Math.max(0, cap - currentPlatformEarnings);
+            const actualBonus = Math.min(referralBonus, remainingCap);
+
+            if (actualBonus > 0) {
+              await User.findByIdAndUpdate(driver.referredBy, {
+                $inc: {
+                  'wallet.balance': actualBonus,
+                  referralEarnings: actualBonus,
+                  referralEarningsPlatform: actualBonus
+                }
+              });
+              await Transaction.create({
+                user: driver.referredBy,
+                ride: ride._id,
+                type: 'referral',
+                amount: actualBonus,
+                status: 'completed',
+                description: 'Ambassador bonus (10% platform fee) from ' + driver.name + ' - ' + ride.type
+              });
+            }
           }
         }
       }

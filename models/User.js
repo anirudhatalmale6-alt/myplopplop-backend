@@ -56,9 +56,24 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  referredAt: {
+    type: Date // when this user was referred - for 3-month platform fee cap
+  },
   referralEarnings: {
     type: Number,
     default: 0
+  },
+  referralEarningsPackages: {
+    type: Number,
+    default: 0 // 48HR package commissions (no cap)
+  },
+  referralEarningsPlatform: {
+    type: Number,
+    default: 0 // platform fee commissions (3-month cap per referred user)
+  },
+  referralPayoutCap: {
+    type: Number,
+    default: 500 // max payout in HTG per referred account for platform fees
   },
   referralCount: {
     type: Number,

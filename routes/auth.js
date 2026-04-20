@@ -48,7 +48,8 @@ router.post('/register', [
       language: language || 'fr',
       isDiaspora: isDiaspora || false,
       country,
-      referredBy
+      referredBy,
+      referredAt: referredBy ? new Date() : undefined
     });
 
     const token = user.getSignedJwtToken();

@@ -74,8 +74,9 @@ router.post('/apply', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Invalid referral code' });
     }
 
-    // Apply referral
+    // Apply referral with timestamp for 3-month platform fee window
     user.referredBy = referrer._id;
+    user.referredAt = new Date();
     await user.save();
 
     // Increment referrer's count
@@ -84,7 +85,7 @@ router.post('/apply', protect, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Referral code applied! ' + referrer.name + ' will earn 10% ambassador commission.',
+      message: 'Referral code applied! ' + referrer.name + ' earns 10% on 48HR packages + 10% platform fees (first 3 months).',
       referrerName: referrer.name
     });
   } catch (error) {
