@@ -173,11 +173,10 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
         description: `Commission (25%) from ${ride.type}`
       });
 
-      // Ambassador referral bonus
-      // 5% for business/marketplace referrals, 2% for driver referrals
+      // Ambassador referral bonus - 10% across the board
       const driver = await User.findById(req.user._id);
       if (driver && driver.referredBy) {
-        const referralRate = 0.02; // 2% for drivers
+        const referralRate = 0.10; // 10% across the board
         const referralBonus = Math.round(ride.fare.total * referralRate);
         if (referralBonus > 0) {
           await User.findByIdAndUpdate(driver.referredBy, {
