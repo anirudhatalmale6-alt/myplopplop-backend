@@ -19,6 +19,9 @@ const paymentRoutes = require('./routes/payments');
 const referralRoutes = require('./routes/referrals');
 const chatRoutes = require('./routes/chat');
 const notificationRoutes = require('./routes/notifications');
+const solRoutes = require('./routes/sol');
+const orderRoutes = require('./routes/orders');
+const storeRoutes = require('./routes/stores');
 
 const app = express();
 const server = http.createServer(app);
@@ -60,6 +63,9 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/sol', solRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/stores', storeRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
