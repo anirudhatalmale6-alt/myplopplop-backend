@@ -176,6 +176,50 @@ router.put('/profile', protect, async (req, res) => {
   }
 });
 
+// POST /api/auth/forgot-pin — reset PIN by phone number
+// Since no SMS service is configured yet, this resets PIN directly
+// In production, this should send an OTP via SMS first
+router.post('/forgot-pin', [
+  body('phone').trim().notEmpty().withMessage('Phone number is required'),
+  body('newPin').isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
+    .isNumeric().withMessage('PIN must be numeric')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, errors: errors.array() });
+  }
+
+  try {
+    const { phone, newPin } = req.body;
+    const user = await User.findOne({ phone }).select('+password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'No account found with this phone number' });
+    }
+
+    user.password = newPin;
+    await user.save();
+
+    const token = user.getSignedJwtToken();
+
+    res.json({
+      success: true,
+      message: 'PIN reset successfully',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        phone: user.phone,
+        role: user.role,
+        language: user.language,
+        wallet: user.wallet,
+        referralCode: user.referralCode
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // PUT /api/auth/change-pin
 router.put('/change-pin', protect, [
   body('currentPin').notEmpty().withMessage('Current PIN is required'),
