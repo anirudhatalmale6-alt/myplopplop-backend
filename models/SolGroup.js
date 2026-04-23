@@ -3,12 +3,19 @@ const mongoose = require('mongoose');
 const memberSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   joinedAt: { type: Date, default: Date.now },
-  position: { type: Number }, // payout order (1-based)
+  position: { type: Number },
+  joinType: {
+    type: String,
+    enum: ['invite', 'public_apply', 'admin_add'],
+    default: 'invite'
+  },
   status: {
     type: String,
-    enum: ['active', 'defaulted', 'removed', 'completed'],
-    default: 'active'
+    enum: ['pending', 'approved', 'active', 'suspended', 'defaulted', 'removed', 'completed'],
+    default: 'pending'
   },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  approvedAt: Date,
   totalContributed: { type: Number, default: 0 },
   totalReceived: { type: Number, default: 0 },
   missedPayments: { type: Number, default: 0 }
@@ -47,9 +54,12 @@ const payoutSchema = new mongoose.Schema({
   transactionRef: String,
   status: {
     type: String,
-    enum: ['pending', 'completed', 'failed'],
-    default: 'pending'
-  }
+    enum: ['scheduled', 'ready', 'pending', 'completed', 'held', 'failed', 'cancelled'],
+    default: 'scheduled'
+  },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  approvedAt: Date,
+  holdReason: String
 }, { _id: true, timestamps: true });
 
 const solGroupSchema = new mongoose.Schema({
@@ -74,6 +84,17 @@ const solGroupSchema = new mongoose.Schema({
   }],
   members: [memberSchema],
 
+  groupType: {
+    type: String,
+    enum: ['private', 'public', 'community', 'business'],
+    default: 'private'
+  },
+  groupCode: {
+    type: String,
+    unique: true,
+    sparse: true
+  },
+
   // Group settings
   maxMembers: {
     type: Number,
@@ -85,7 +106,7 @@ const solGroupSchema = new mongoose.Schema({
   contributionAmount: {
     type: Number,
     required: [true, 'Contribution amount is required'],
-    min: 100 // minimum 100 HTG
+    min: 100
   },
   currency: {
     type: String,
@@ -93,9 +114,23 @@ const solGroupSchema = new mongoose.Schema({
   },
   frequency: {
     type: String,
-    enum: ['weekly', 'biweekly', 'monthly'],
+    enum: ['daily', 'weekly', 'biweekly', 'monthly'],
     default: 'monthly'
   },
+  gracePeriodDays: {
+    type: Number,
+    default: 2
+  },
+  lateFeeEnabled: {
+    type: Boolean,
+    default: false
+  },
+  lateFeeAmount: {
+    type: Number,
+    default: 0
+  },
+  startDate: Date,
+  endDate: Date,
 
   // Cycle tracking
   currentCycle: { type: Number, default: 0 },
@@ -128,8 +163,13 @@ const solGroupSchema = new mongoose.Schema({
   // Group status
   status: {
     type: String,
-    enum: ['forming', 'active', 'paused', 'completed', 'dissolved'],
+    enum: ['draft', 'forming', 'open', 'full', 'active', 'paused', 'completed', 'cancelled', 'dissolved'],
     default: 'forming'
+  },
+  visibility: {
+    type: String,
+    enum: ['public', 'private'],
+    default: 'private'
   },
 
   // Premium group features
@@ -146,13 +186,15 @@ const solGroupSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate invite code on creation
 solGroupSchema.pre('save', function(next) {
-  if (this.isNew && !this.inviteCode) {
-    var code = 'SOL-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-    this.inviteCode = code;
+  if (this.isNew) {
+    if (!this.inviteCode) {
+      this.inviteCode = 'SOL-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+    }
+    if (!this.groupCode) {
+      this.groupCode = 'GRP-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+    }
   }
-  // totalCycles = maxMembers
   if (!this.totalCycles) {
     this.totalCycles = this.maxMembers;
   }
