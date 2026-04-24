@@ -24,6 +24,7 @@ const orderRoutes = require('./routes/orders');
 const storeRoutes = require('./routes/stores');
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // Socket.io setup
