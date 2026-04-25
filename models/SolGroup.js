@@ -156,6 +156,19 @@ const solGroupSchema = new mongoose.Schema({
   withdrawalFeePercent: { type: Number, default: 1.5 }, // 1.5% on withdrawal
   accessFee: { type: Number, default: 150 }, // 150 HTG/month
 
+  // Deposit lock - require upfront payment to join
+  depositLockEnabled: { type: Boolean, default: false },
+  depositLockAmount: { type: Number, default: 0 },
+
+  // Payout blocking - skip members who haven't paid
+  payoutBlockingEnabled: { type: Boolean, default: true },
+
+  // Auto-default after missed payments
+  autoDefaultThreshold: { type: Number, default: 2 },
+
+  // Minimum trust score to join
+  minTrustScore: { type: Number, default: 0 },
+
   // Trust layer (optional)
   trustLayerEnabled: { type: Boolean, default: false },
   trustFeePerMember: { type: Number, default: 0 }, // $2-$5 per member per cycle

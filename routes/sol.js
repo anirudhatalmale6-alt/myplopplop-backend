@@ -56,6 +56,11 @@ router.post('/',
         lateFeeAmount: req.body.lateFeeAmount || 0,
         trustLayerEnabled: req.body.trustLayerEnabled || false,
         trustFeePerMember: req.body.trustFeePerMember || 0,
+        depositLockEnabled: req.body.depositLockEnabled || false,
+        depositLockAmount: req.body.depositLockAmount || 0,
+        payoutBlockingEnabled: req.body.payoutBlockingEnabled !== false,
+        autoDefaultThreshold: req.body.autoDefaultThreshold || 2,
+        minTrustScore: req.body.minTrustScore || 0,
         members: [{
           user: req.user._id,
           position: 1,
@@ -108,7 +113,8 @@ router.patch('/:id',
       }
 
       var allowed = ['name', 'description', 'groupType', 'visibility', 'maxMembers',
-        'contributionAmount', 'frequency', 'gracePeriodDays', 'lateFeeEnabled', 'lateFeeAmount'];
+        'contributionAmount', 'frequency', 'gracePeriodDays', 'lateFeeEnabled', 'lateFeeAmount',
+        'depositLockEnabled', 'depositLockAmount', 'payoutBlockingEnabled', 'autoDefaultThreshold', 'minTrustScore'];
       var beforeState = {};
       var afterState = {};
 
@@ -450,6 +456,42 @@ router.post('/join/:inviteCode', protect, async function(req, res) {
       return res.status(400).json({ success: false, message: 'Group is full' });
     }
 
+    // Trust score check
+    var joiningUser = await User.findById(req.user._id);
+    if (group.minTrustScore > 0 && joiningUser.solTrustScore < group.minTrustScore) {
+      return res.status(403).json({
+        success: false,
+        message: 'Eskò konfyans ou twò ba pou gwoup sa a. Bezwen ' + group.minTrustScore + ', ou gen ' + joiningUser.solTrustScore,
+        trustScore: joiningUser.solTrustScore,
+        required: group.minTrustScore
+      });
+    }
+
+    // Deposit lock - deduct from wallet if enabled
+    if (group.depositLockEnabled && group.depositLockAmount > 0) {
+      if (joiningUser.wallet.balance < group.depositLockAmount) {
+        return res.status(402).json({
+          success: false,
+          message: 'Depo obligatwa: ' + group.depositLockAmount + ' HTG. Balans ou: ' + joiningUser.wallet.balance + ' HTG',
+          required: group.depositLockAmount,
+          balance: joiningUser.wallet.balance
+        });
+      }
+      joiningUser.wallet.balance -= group.depositLockAmount;
+      await joiningUser.save();
+
+      await Transaction.create({
+        user: req.user._id,
+        type: 'payment',
+        amount: group.depositLockAmount,
+        currency: 'HTG',
+        method: 'wallet',
+        status: 'completed',
+        reference: 'SOL-DEPOSIT-' + group._id,
+        description: 'Sol deposit lock: ' + group.name
+      });
+    }
+
     group.members.push({
       user: req.user._id,
       position: activeCount + 1,
@@ -471,7 +513,7 @@ router.post('/join/:inviteCode', protect, async function(req, res) {
       group: group._id,
       user: req.user._id,
       actionType: 'member_joined_invite',
-      afterState: { inviteCode: req.params.inviteCode }
+      afterState: { inviteCode: req.params.inviteCode, depositPaid: group.depositLockEnabled ? group.depositLockAmount : 0 }
     });
 
     res.json({ success: true, message: 'Joined group successfully', data: group });
@@ -748,6 +790,19 @@ router.post('/:id/contribute',
       if (paymentStatus === 'confirmed') {
         member.totalContributed += amount;
         group.totalCollected += amount;
+
+        // Update trust score based on payment timing
+        var contributingUser = await User.findById(req.user._id);
+        if (contributingUser) {
+          if (lateFee > 0) {
+            contributingUser.solLatePayments += 1;
+            contributingUser.solTrustScore = Math.max(0, contributingUser.solTrustScore - 5);
+          } else {
+            contributingUser.solOnTimePayments += 1;
+            contributingUser.solTrustScore = Math.min(100, contributingUser.solTrustScore + 2);
+          }
+          await contributingUser.save();
+        }
 
         // Update cycle record
         await SolCycle.findOneAndUpdate(
@@ -1038,6 +1093,42 @@ router.post('/payouts/:payoutId/approve', protect, async function(req, res) {
         success: false,
         message: 'Not all members have paid. ' + cycleContributions.length + '/' + activeMembers.length + ' paid.'
       });
+    }
+
+    // Payout blocking: check if the recipient has paid their share this cycle
+    if (group.payoutBlockingEnabled) {
+      var recipientPaid = group.hasMemberPaid(payout.recipient, payout.cycle);
+      if (!recipientPaid) {
+        payout.status = 'held';
+        payout.holdReason = 'Recipient has not paid their contribution for this cycle';
+        await group.save();
+
+        // Update recipient trust score
+        var blockedUser = await User.findById(payout.recipient);
+        if (blockedUser) {
+          blockedUser.solMissedPayments += 1;
+          blockedUser.solTrustScore = Math.max(0, blockedUser.solTrustScore - 15);
+          await blockedUser.save();
+        }
+
+        // Flag member
+        var recipientMember = group.members.find(function(m) {
+          return m.user.toString() === payout.recipient.toString();
+        });
+        if (recipientMember) {
+          recipientMember.missedPayments += 1;
+          if (recipientMember.missedPayments >= group.autoDefaultThreshold) {
+            recipientMember.status = 'defaulted';
+          }
+          await group.save();
+        }
+
+        return res.status(400).json({
+          success: false,
+          message: 'Payout held: recipient has not paid their share. They must contribute before receiving.',
+          status: 'held'
+        });
+      }
     }
 
     payout.status = 'pending';
@@ -1427,6 +1518,38 @@ router.get('/admin/all', protect, authorize('admin'), async function(req, res) {
     });
   } catch (err) {
     console.error('Admin Sol groups error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── GET TRUST SCORE ───
+router.get('/trust-score/:userId', protect, async function(req, res) {
+  try {
+    var userId = req.params.userId === 'me' ? req.user._id : req.params.userId;
+    var user = await User.findById(userId).select('name solTrustScore solOnTimePayments solLatePayments solMissedPayments solGroupsCompleted');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    var level = 'New';
+    if (user.solTrustScore >= 90) level = 'Excellent';
+    else if (user.solTrustScore >= 70) level = 'Good';
+    else if (user.solTrustScore >= 50) level = 'Fair';
+    else if (user.solTrustScore >= 30) level = 'Low';
+    else level = 'Very Low';
+
+    res.json({
+      success: true,
+      data: {
+        name: user.name,
+        trustScore: user.solTrustScore,
+        level: level,
+        onTimePayments: user.solOnTimePayments,
+        latePayments: user.solLatePayments,
+        missedPayments: user.solMissedPayments,
+        groupsCompleted: user.solGroupsCompleted
+      }
+    });
+  } catch (err) {
+    console.error('Get trust score error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });

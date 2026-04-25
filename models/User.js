@@ -79,6 +79,26 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  solTrustScore: {
+    type: Number,
+    default: 100
+  },
+  solOnTimePayments: {
+    type: Number,
+    default: 0
+  },
+  solLatePayments: {
+    type: Number,
+    default: 0
+  },
+  solMissedPayments: {
+    type: Number,
+    default: 0
+  },
+  solGroupsCompleted: {
+    type: Number,
+    default: 0
+  },
   isActive: {
     type: Boolean,
     default: true
