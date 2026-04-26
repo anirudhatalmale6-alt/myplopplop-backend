@@ -67,19 +67,60 @@ router.post('/', protect, [
       }
     }
 
-    var commission = Math.round(subtotal * store.commissionRate / 100);
-    var total = subtotal + deliveryFee;
+    var commissionRate = store.commissionRate || 10;
+    var commission = Math.round(subtotal * commissionRate / 100);
     var merchantEarning = subtotal - commission;
+
+    // Diaspora fee: +3-5% on subtotal
+    var isDiaspora = req.body.isDiasporaOrder || false;
+    var diasporaFee = 0;
+    if (isDiaspora) {
+      diasporaFee = Math.round(subtotal * 0.03); // 3% diaspora surcharge
+    }
+
+    // Delivery split: driver 80%, platform 20%
+    var deliveryDriverCut = Math.round(deliveryFee * 0.80);
+    var deliveryPlatformCut = deliveryFee - deliveryDriverCut;
+
+    var total = subtotal + deliveryFee + diasporaFee;
+
+    // Referral: 5% of platform commission
+    var referralBonus = 0;
+    var customer = await User.findById(req.user._id);
+    if (customer.referredBy) {
+      referralBonus = Math.round(commission * 0.05);
+      var referrer = await User.findById(customer.referredBy);
+      if (referrer) {
+        referrer.wallet.balance += referralBonus;
+        referrer.referralEarnings += referralBonus;
+        await referrer.save();
+        await Transaction.create({
+          user: referrer._id,
+          type: 'referral',
+          amount: referralBonus,
+          currency: 'HTG',
+          method: 'wallet',
+          status: 'completed',
+          description: 'Referral bonus: 5% of order commission'
+        });
+      }
+    }
 
     // Process wallet payment
     if (req.body.paymentMethod === 'wallet') {
-      var customer = await User.findById(req.user._id);
       if (customer.wallet.balance < total) {
         return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
       }
       customer.wallet.balance -= total;
       await customer.save();
     }
+
+    // Payout hold: new vendors get 72h, others get 24h
+    var vendorCreated = store.createdAt;
+    var isNewVendor = (Date.now() - vendorCreated.getTime()) < 30 * 24 * 60 * 60 * 1000; // < 30 days
+    var holdHours = isNewVendor ? 72 : 24;
+    if (isDiaspora) holdHours += 24; // extra 24h for diaspora
+    var payoutAvailableAt = new Date(Date.now() + holdHours * 60 * 60 * 1000);
 
     var order = await Order.create({
       customer: req.user._id,
@@ -90,11 +131,17 @@ router.post('/', protect, [
       deliveryFee: deliveryFee,
       subtotal: subtotal,
       commission: commission,
+      diasporaFee: diasporaFee,
       total: total,
       merchantEarning: merchantEarning,
+      riderEarning: deliveryDriverCut,
+      deliveryPlatformCut: deliveryPlatformCut,
+      deliveryDriverCut: deliveryDriverCut,
       paymentMethod: req.body.paymentMethod,
       paymentStatus: req.body.paymentMethod === 'wallet' ? 'paid' : 'pending',
-      isDiasporaOrder: req.body.isDiasporaOrder || false,
+      payoutStatus: 'held',
+      payoutAvailableAt: payoutAvailableAt,
+      isDiasporaOrder: isDiaspora,
       recipient: req.body.recipient || null,
       notes: req.body.notes || ''
     });
@@ -219,12 +266,31 @@ router.put('/:id/status', protect, [
     if (req.body.status === 'picked_up') order.pickedUpAt = new Date();
     if (req.body.status === 'delivered') {
       order.deliveredAt = new Date();
-      // Credit merchant
       if (order.paymentStatus === 'paid') {
+        // Move to pending_balance (hold → verify → release)
         var merchant = await User.findById(store.owner);
         if (merchant) {
-          merchant.wallet.balance += order.merchantEarning;
+          merchant.wallet.pending_balance += order.merchantEarning;
           await merchant.save();
+        }
+        order.payoutStatus = 'pending';
+        // Credit delivery driver immediately (80%)
+        if (order.rider && order.deliveryDriverCut > 0) {
+          var driver = await User.findById(order.rider);
+          if (driver) {
+            driver.wallet.balance += order.deliveryDriverCut;
+            await driver.save();
+            await Transaction.create({
+              user: driver._id,
+              type: 'earning',
+              amount: order.deliveryDriverCut,
+              currency: 'HTG',
+              method: 'wallet',
+              status: 'completed',
+              reference: order.orderNumber,
+              description: 'Delivery earning (80%)'
+            });
+          }
         }
       }
     }

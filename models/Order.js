@@ -58,10 +58,22 @@ const orderSchema = new mongoose.Schema({
 
   // Financials
   subtotal: { type: Number, required: true },
-  commission: { type: Number, default: 0 }, // platform commission
+  commission: { type: Number, default: 0 }, // platform commission (10%)
+  diasporaFee: { type: Number, default: 0 }, // +3-5% for diaspora orders
   total: { type: Number, required: true },
   merchantEarning: { type: Number, default: 0 },
   riderEarning: { type: Number, default: 0 },
+  deliveryPlatformCut: { type: Number, default: 0 }, // 20% of delivery fee
+  deliveryDriverCut: { type: Number, default: 0 }, // 80% of delivery fee
+
+  // Payout tracking
+  payoutStatus: {
+    type: String,
+    enum: ['held', 'pending', 'available', 'paid', 'refunded'],
+    default: 'held'
+  },
+  payoutAvailableAt: Date,
+  payoutPaidAt: Date,
 
   // Payment
   paymentMethod: {

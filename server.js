@@ -22,6 +22,8 @@ const notificationRoutes = require('./routes/notifications');
 const solRoutes = require('./routes/sol');
 const orderRoutes = require('./routes/orders');
 const storeRoutes = require('./routes/stores');
+const payoutRoutes = require('./routes/payouts');
+const featuredRoutes = require('./routes/featured');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -67,6 +69,8 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/sol', solRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/stores', storeRoutes);
+app.use('/api/payouts', payoutRoutes);
+app.use('/api/featured', featuredRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -58,7 +58,7 @@ const storeSchema = new mongoose.Schema({
   },
   commissionRate: {
     type: Number,
-    default: 15, // 15% platform commission
+    default: 10, // 10% platform commission
     min: 0,
     max: 50
   },

@@ -45,6 +45,8 @@ const userSchema = new mongoose.Schema({
   country: String,
   wallet: {
     balance: { type: Number, default: 0 },
+    pending_balance: { type: Number, default: 0 },
+    available_balance: { type: Number, default: 0 },
     currency: { type: String, default: 'HTG' }
   },
   referralCode: {
