@@ -17,8 +17,11 @@ const koutyePayoutSchema = new mongoose.Schema({
   },
   method: {
     type: String,
-    enum: ['moncash', 'natcash', 'bank'],
+    enum: ['moncash', 'natcash', 'bank', 'manual'],
     required: true
+  },
+  destinationAccount: {
+    type: String
   },
   details: {
     phone: String,
@@ -28,14 +31,26 @@ const koutyePayoutSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'processing', 'paid', 'rejected'],
+    enum: ['pending', 'approved', 'paid', 'rejected', 'failed'],
     default: 'pending'
   },
-  processedAt: Date,
+  adminNote: String,
+  providerReference: String,
+  requestedAt: {
+    type: Date,
+    default: Date.now
+  },
+  approvedAt: Date,
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  paidAt: Date,
   processedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  rejectedAt: Date,
   rejectionReason: String,
   reference: String
 }, {

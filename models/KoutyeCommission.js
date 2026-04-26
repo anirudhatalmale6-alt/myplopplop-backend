@@ -16,9 +16,20 @@ const koutyeCommissionSchema = new mongoose.Schema({
     enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay'],
     required: true
   },
+  transactionId: {
+    type: String
+  },
+  serviceType: {
+    type: String,
+    enum: ['package', 'ride', 'delivery', 'marketplace', 'utility', 'sol', 'talent'],
+    default: 'package'
+  },
   sourceAmount: {
     type: Number,
     required: true
+  },
+  platformFee: {
+    type: Number
   },
   commissionRate: {
     type: Number,
@@ -34,15 +45,21 @@ const koutyeCommissionSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'approved', 'paid', 'rejected'],
+    enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'expired'],
     default: 'pending'
   },
   description: String,
   sourceTransaction: {
     type: String
   },
+  earnedAt: {
+    type: Date,
+    default: Date.now
+  },
+  validatedAt: Date,
   approvedAt: Date,
   paidAt: Date,
+  expiresAt: Date,
   rejectionReason: String
 }, {
   timestamps: true

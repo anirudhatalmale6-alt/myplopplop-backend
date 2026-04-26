@@ -5,6 +5,7 @@ const Koutye = require('../models/Koutye');
 const KoutyeReferral = require('../models/KoutyeReferral');
 const KoutyeCommission = require('../models/KoutyeCommission');
 const KoutyePayout = require('../models/KoutyePayout');
+const KoutyeWallet = require('../models/KoutyeWallet');
 const User = require('../models/User');
 
 const COMMISSION_WINDOW_DAYS = 365;
@@ -52,6 +53,8 @@ router.post('/register', protect, async (req, res) => {
       payoutMethod: payoutMethod || 'moncash',
       payoutDetails: payoutDetails || { phone: req.user.phone }
     });
+
+    await KoutyeWallet.create({ koutye: koutye._id });
 
     res.status(201).json({
       success: true,
@@ -444,6 +447,69 @@ router.get('/commissions', protect, async (req, res) => {
   }
 });
 
+// GET /api/koutye/wallet - Koutye wallet balances
+router.get('/wallet', protect, async (req, res) => {
+  try {
+    const koutye = await Koutye.findOne({ user: req.user._id });
+    if (!koutye) {
+      return res.status(404).json({ success: false, message: 'Koutye profile not found' });
+    }
+
+    let wallet = await KoutyeWallet.findOne({ koutye: koutye._id });
+    if (!wallet) {
+      wallet = await KoutyeWallet.create({ koutye: koutye._id });
+    }
+
+    const pendingComm = await KoutyeCommission.aggregate([
+      { $match: { koutye: koutye._id, status: 'pending' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const validatedComm = await KoutyeCommission.aggregate([
+      { $match: { koutye: koutye._id, status: { $in: ['validated', 'approved'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const paidComm = await KoutyeCommission.aggregate([
+      { $match: { koutye: koutye._id, status: 'paid' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const paidThisMonth = await KoutyeCommission.aggregate([
+      { $match: { koutye: koutye._id, status: 'paid', paidAt: { $gte: monthStart } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+
+    const pendingPayouts = await KoutyePayout.aggregate([
+      { $match: { koutye: koutye._id, status: { $in: ['pending', 'approved'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+
+    const available = (validatedComm[0]?.total || 0) - (pendingPayouts[0]?.total || 0);
+
+    wallet.available_balance = Math.max(0, available);
+    wallet.pending_balance = pendingComm[0]?.total || 0;
+    wallet.paid_balance = paidComm[0]?.total || 0;
+    wallet.lifetime_earnings = (pendingComm[0]?.total || 0) + (validatedComm[0]?.total || 0) + (paidComm[0]?.total || 0);
+    await wallet.save();
+
+    res.json({
+      success: true,
+      data: {
+        available_balance: wallet.available_balance,
+        pending_balance: wallet.pending_balance,
+        paid_balance: wallet.paid_balance,
+        paid_this_month: paidThisMonth[0]?.total || 0,
+        lifetime_earnings: wallet.lifetime_earnings,
+        currency: wallet.currency
+      }
+    });
+  } catch (err) {
+    console.error('Koutye wallet error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // POST /api/koutye/payout/request - Request a payout
 router.post('/payout/request', protect, async (req, res) => {
   try {
@@ -455,21 +521,20 @@ router.post('/payout/request', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Koutye account is not active' });
     }
 
-    const approvedTotal = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: 'approved' } },
+    const validatedTotal = await KoutyeCommission.aggregate([
+      { $match: { koutye: koutye._id, status: { $in: ['validated', 'approved'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
-    const available = approvedTotal[0]?.total || 0;
+    const available = validatedTotal[0]?.total || 0;
 
     const pendingPayouts = await KoutyePayout.aggregate([
-      { $match: { koutye: koutye._id, status: { $in: ['pending', 'processing'] } } },
+      { $match: { koutye: koutye._id, status: { $in: ['pending', 'approved'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const pendingTotal = pendingPayouts[0]?.total || 0;
-
     const withdrawable = available - pendingTotal;
 
-    const { amount, method } = req.body;
+    const { amount, method, destinationAccount, notes } = req.body;
     const requestAmount = amount || withdrawable;
 
     if (requestAmount < MIN_PAYOUT_HTG) {
@@ -490,7 +555,9 @@ router.post('/payout/request', protect, async (req, res) => {
       koutye: koutye._id,
       amount: requestAmount,
       method: payoutMethod,
-      details: koutye.payoutDetails
+      destinationAccount: destinationAccount || koutye.payoutDetails?.phone,
+      details: koutye.payoutDetails,
+      adminNote: notes
     });
 
     res.status(201).json({
@@ -509,65 +576,7 @@ router.post('/payout/request', protect, async (req, res) => {
   }
 });
 
-// PUT /api/koutye/payout/:id/process - Admin process payout
-router.put('/payout/:id/process', protect, authorize('admin'), async (req, res) => {
-  try {
-    const payout = await KoutyePayout.findById(req.params.id);
-    if (!payout) {
-      return res.status(404).json({ success: false, message: 'Payout not found' });
-    }
-
-    const { action, reference, rejectionReason } = req.body;
-
-    if (action === 'approve') {
-      const commissions = await KoutyeCommission.find({
-        koutye: payout.koutye,
-        status: 'approved'
-      }).sort({ createdAt: 1 });
-
-      let remaining = payout.amount;
-      for (const c of commissions) {
-        if (remaining <= 0) break;
-        c.status = 'paid';
-        c.paidAt = new Date();
-        remaining -= c.amount;
-        await c.save();
-      }
-
-      payout.status = 'paid';
-      payout.processedAt = new Date();
-      payout.processedBy = req.user._id;
-      payout.reference = reference;
-      await payout.save();
-
-      const koutye = await Koutye.findById(payout.koutye);
-      if (koutye) {
-        koutye.stats.paidEarnings += payout.amount;
-        koutye.stats.pendingEarnings = Math.max(0, koutye.stats.pendingEarnings - payout.amount);
-        koutye.stats.totalPayouts += 1;
-        koutye.lastPayoutDate = new Date();
-        await koutye.save();
-      }
-
-      res.json({ success: true, data: { id: payout._id, status: 'paid' } });
-    } else if (action === 'reject') {
-      payout.status = 'rejected';
-      payout.rejectionReason = rejectionReason || 'Rejected by admin';
-      payout.processedAt = new Date();
-      payout.processedBy = req.user._id;
-      await payout.save();
-
-      res.json({ success: true, data: { id: payout._id, status: 'rejected' } });
-    } else {
-      res.status(400).json({ success: false, message: 'action must be approve or reject' });
-    }
-  } catch (err) {
-    console.error('Payout process error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// GET /api/koutye/payout/history - Payout history
+// GET /api/koutye/payout/history - Payout history (payouts list)
 router.get('/payout/history', protect, async (req, res) => {
   try {
     const koutye = await Koutye.findOne({ user: req.user._id });
@@ -586,14 +595,127 @@ router.get('/payout/history', protect, async (req, res) => {
         amount: p.amount,
         method: p.method,
         status: p.status,
-        requestDate: p.createdAt,
-        processedAt: p.processedAt,
-        reference: p.reference,
-        rejectionReason: p.rejectionReason
+        destinationAccount: p.destinationAccount,
+        requestDate: p.requestedAt || p.createdAt,
+        approvedAt: p.approvedAt,
+        paidAt: p.paidAt,
+        rejectedAt: p.rejectedAt,
+        reference: p.providerReference || p.reference,
+        rejectionReason: p.rejectionReason,
+        adminNote: p.adminNote
       }))
     });
   } catch (err) {
     console.error('Payout history error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// PATCH /api/koutye/admin/payouts/:id/approve - Admin approve payout
+router.patch('/admin/payouts/:id/approve', protect, authorize('admin'), async (req, res) => {
+  try {
+    const payout = await KoutyePayout.findById(req.params.id);
+    if (!payout) {
+      return res.status(404).json({ success: false, message: 'Payout not found' });
+    }
+    if (payout.status !== 'pending') {
+      return res.status(400).json({ success: false, message: `Cannot approve payout with status: ${payout.status}` });
+    }
+
+    payout.status = 'approved';
+    payout.approvedAt = new Date();
+    payout.approvedBy = req.user._id;
+    if (req.body.adminNote) payout.adminNote = req.body.adminNote;
+    await payout.save();
+
+    res.json({ success: true, data: { id: payout._id, status: 'approved' } });
+  } catch (err) {
+    console.error('Payout approve error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// PATCH /api/koutye/admin/payouts/:id/reject - Admin reject payout
+router.patch('/admin/payouts/:id/reject', protect, authorize('admin'), async (req, res) => {
+  try {
+    const payout = await KoutyePayout.findById(req.params.id);
+    if (!payout) {
+      return res.status(404).json({ success: false, message: 'Payout not found' });
+    }
+    if (!['pending', 'approved'].includes(payout.status)) {
+      return res.status(400).json({ success: false, message: `Cannot reject payout with status: ${payout.status}` });
+    }
+
+    payout.status = 'rejected';
+    payout.rejectedAt = new Date();
+    payout.rejectionReason = req.body.reason || 'Rejected by admin';
+    payout.processedBy = req.user._id;
+    if (req.body.adminNote) payout.adminNote = req.body.adminNote;
+    await payout.save();
+
+    res.json({ success: true, data: { id: payout._id, status: 'rejected' } });
+  } catch (err) {
+    console.error('Payout reject error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// PATCH /api/koutye/admin/payouts/:id/mark-paid - Admin mark payout as paid
+router.patch('/admin/payouts/:id/mark-paid', protect, authorize('admin'), async (req, res) => {
+  try {
+    const payout = await KoutyePayout.findById(req.params.id);
+    if (!payout) {
+      return res.status(404).json({ success: false, message: 'Payout not found' });
+    }
+    if (!['pending', 'approved'].includes(payout.status)) {
+      return res.status(400).json({ success: false, message: `Cannot mark-paid payout with status: ${payout.status}` });
+    }
+
+    const commissions = await KoutyeCommission.find({
+      koutye: payout.koutye,
+      status: { $in: ['validated', 'approved'] }
+    }).sort({ createdAt: 1 });
+
+    let remaining = payout.amount;
+    for (const c of commissions) {
+      if (remaining <= 0) break;
+      c.status = 'paid';
+      c.paidAt = new Date();
+      remaining -= c.amount;
+      await c.save();
+    }
+
+    payout.status = 'paid';
+    payout.paidAt = new Date();
+    payout.processedBy = req.user._id;
+    payout.providerReference = req.body.reference || req.body.providerReference;
+    if (req.body.adminNote) payout.adminNote = req.body.adminNote;
+    if (!payout.approvedAt) {
+      payout.approvedAt = new Date();
+      payout.approvedBy = req.user._id;
+    }
+    await payout.save();
+
+    const koutye = await Koutye.findById(payout.koutye);
+    if (koutye) {
+      koutye.stats.paidEarnings += payout.amount;
+      koutye.stats.pendingEarnings = Math.max(0, koutye.stats.pendingEarnings - payout.amount);
+      koutye.stats.totalPayouts += 1;
+      koutye.lastPayoutDate = new Date();
+      await koutye.save();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: payout._id,
+        status: 'paid',
+        paidAt: payout.paidAt,
+        reference: payout.providerReference
+      }
+    });
+  } catch (err) {
+    console.error('Payout mark-paid error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
