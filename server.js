@@ -24,6 +24,7 @@ const orderRoutes = require('./routes/orders');
 const storeRoutes = require('./routes/stores');
 const payoutRoutes = require('./routes/payouts');
 const featuredRoutes = require('./routes/featured');
+const koutyeRoutes = require('./routes/koutye');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -71,6 +72,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/stores', storeRoutes);
 app.use('/api/payouts', payoutRoutes);
 app.use('/api/featured', featuredRoutes);
+app.use('/api/koutye', koutyeRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -3,6 +3,12 @@ const corsOptions = {
     const allowed = [
       'https://myplopplop.com',
       'https://www.myplopplop.com',
+      'https://haitibiznis.com',
+      'https://www.haitibiznis.com',
+      'https://48hoursready.com',
+      'https://www.48hoursready.com',
+      'https://msouwout.com',
+      'https://www.msouwout.com',
       'http://localhost:3000',
       'http://localhost:5500',
       'http://127.0.0.1:5500'
