@@ -8,21 +8,37 @@ const KoutyePayout = require('../models/KoutyePayout');
 const KoutyeWallet = require('../models/KoutyeWallet');
 const Transaction = require('../models/Transaction');
 
-let moncash = null;
-function getMoncash() {
-  if (!moncash) {
-    const Moncash = require('moncash');
-    moncash = new Moncash({
-      mode: process.env.MONCASH_MODE || 'sandbox',
-      clientId: process.env.MONCASH_CLIENT_ID || '',
-      clientSecret: process.env.MONCASH_CLIENT_SECRET || ''
-    });
-  }
-  return moncash;
-}
+const SOLUTIONIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
+const SOLUTIONIP_CLIENT_ID = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
 
 function generateOrderId(prefix) {
   return prefix + '_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+}
+
+async function createSolutionIPPayment(referenceId, amount, paymentMethod) {
+  const response = await fetch(`${SOLUTIONIP_URL}/api/paiement-marchand`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: SOLUTIONIP_CLIENT_ID,
+      refference_id: referenceId,
+      montant: amount,
+      payment_method: paymentMethod || 'all'
+    })
+  });
+  return response.json();
+}
+
+async function verifySolutionIPPayment(referenceId) {
+  const response = await fetch(`${SOLUTIONIP_URL}/api/paiement-verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: SOLUTIONIP_CLIENT_ID,
+      refference_id: referenceId
+    })
+  });
+  return response.json();
 }
 
 // Commission rates per platform (based on platform fees, not full amount)
@@ -112,77 +128,37 @@ router.post('/package/purchase', async (req, res) => {
       }
     }
 
-    // Process payment based on method
-    if (paymentMethod === 'moncash' && process.env.MONCASH_CLIENT_ID) {
-      const mc = getMoncash();
-      mc.payment.create({ amount: Math.round(amount * 130), orderId }, (err, payment) => {
-        if (err) {
-          return res.status(500).json({ success: false, message: 'MonCash error: ' + (err.description || err.message) });
-        }
+    // Process payment via SolutionIP (Pey'M PlopPlop gateway)
+    const validMethods = ['moncash', 'natcash', 'kashpaw', 'all'];
+    const sipMethod = validMethods.includes(paymentMethod) ? paymentMethod : 'all';
+
+    try {
+      const sipResult = await createSolutionIPPayment(orderId, Math.round(amount * 130), sipMethod);
+
+      if (sipResult.status === true) {
         return res.json({
           success: true,
           orderId,
           transactionId: transaction._id,
-          redirectUrl: mc.payment.redirectUri(payment),
+          paymentUrl: sipResult.url,
+          sipTransactionId: sipResult.transaction_id,
           mode: 'live',
           koutyeTracked: !!koutyeCommission
         });
-      });
-    } else if (paymentMethod === 'natcash') {
-      const businessNumber = process.env.NATCASH_BUSINESS_NUMBER || '+50948XXXXXXX';
-      return res.json({
-        success: true,
-        orderId,
-        transactionId: transaction._id,
-        mode: 'pending_verification',
-        instructions: {
-          step1: 'Dial *202# on your Natcom phone',
-          step2: 'Select "Send Money"',
-          step3: 'Enter: ' + businessNumber,
-          step4: 'Amount: ' + Math.round(amount * 130) + ' HTG',
-          step5: 'Confirm with your NatCash PIN',
-          reference: orderId
-        },
-        koutyeTracked: !!koutyeCommission
-      });
-    } else {
-      // Demo/card mode
-      transaction.status = 'completed';
-      await transaction.save();
-
-      if (koutyeCommission) {
-        koutyeCommission.status = 'validated';
-        koutyeCommission.validatedAt = new Date();
-        await koutyeCommission.save();
-
-        const koutye = await Koutye.findById(koutyeCommission.koutye);
-        if (koutye) {
-          koutye.stats.totalEarnings += koutyeCommission.amount;
-          koutye.stats.pendingEarnings += koutyeCommission.amount;
-          if (koutye.platformBreakdown['48hoursready']) {
-            koutye.platformBreakdown['48hoursready'].earnings += koutyeCommission.amount;
-          }
-          koutye.updateTier();
-          await koutye.save();
-        }
-
-        const referral = await KoutyeReferral.findById(koutyeCommission.referral);
-        if (referral) {
-          referral.totalCommissionEarned += koutyeCommission.amount;
-          referral.commissionCount += 1;
-          referral.lastCommissionDate = new Date();
-          await referral.save();
-        }
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: sipResult.message || 'Payment creation failed',
+          orderId,
+          koutyeTracked: !!koutyeCommission
+        });
       }
-
-      return res.json({
-        success: true,
-        orderId,
-        transactionId: transaction._id,
-        mode: 'demo',
-        message: 'Package purchased successfully',
-        koutyeTracked: !!koutyeCommission,
-        koutyeCommission: koutyeCommission ? { amount: koutyeCommission.amount, status: koutyeCommission.status } : null
+    } catch (sipErr) {
+      console.error('SolutionIP payment error:', sipErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Payment gateway unavailable',
+        orderId
       });
     }
   } catch (err) {
@@ -205,39 +181,45 @@ router.get('/package/verify', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Transaction not found or already processed' });
     }
 
-    if (process.env.MONCASH_CLIENT_ID) {
-      const mc = getMoncash();
-      mc.capture.getByOrderId(orderId, async (err, capture) => {
-        if (err || !capture.payment) {
-          return res.status(400).json({ success: false, message: 'Payment verification failed' });
-        }
+    const sipResult = await verifySolutionIPPayment(orderId);
 
-        transaction.status = 'completed';
-        await transaction.save();
+    if (sipResult.status === true && sipResult.trans_status === 'ok') {
+      transaction.status = 'completed';
+      await transaction.save();
 
-        // Validate any pending Koutye commissions for this transaction
-        const commissions = await KoutyeCommission.find({ transactionId: orderId, status: 'pending' });
-        for (const c of commissions) {
-          c.status = 'validated';
-          c.validatedAt = new Date();
-          await c.save();
+      const commissions = await KoutyeCommission.find({ transactionId: orderId, status: 'pending' });
+      for (const c of commissions) {
+        c.status = 'validated';
+        c.validatedAt = new Date();
+        await c.save();
 
-          const koutye = await Koutye.findById(c.koutye);
-          if (koutye) {
-            koutye.stats.totalEarnings += c.amount;
-            koutye.stats.pendingEarnings += c.amount;
-            if (koutye.platformBreakdown[c.platform]) {
-              koutye.platformBreakdown[c.platform].earnings += c.amount;
-            }
-            koutye.updateTier();
-            await koutye.save();
+        const koutye = await Koutye.findById(c.koutye);
+        if (koutye) {
+          koutye.stats.totalEarnings += c.amount;
+          koutye.stats.pendingEarnings += c.amount;
+          if (koutye.platformBreakdown[c.platform]) {
+            koutye.platformBreakdown[c.platform].earnings += c.amount;
           }
+          koutye.updateTier();
+          await koutye.save();
         }
+      }
 
-        return res.json({ success: true, message: 'Payment verified, commissions validated' });
+      return res.json({
+        success: true,
+        message: 'Payment verified, commissions validated',
+        payment: {
+          amount: sipResult.montant,
+          method: sipResult.method,
+          date: sipResult.date,
+          time: sipResult.heure
+        }
       });
     } else {
-      return res.json({ success: true, mode: 'demo' });
+      return res.status(400).json({
+        success: false,
+        message: sipResult.message || 'Payment not completed yet'
+      });
     }
   } catch (err) {
     console.error('Package verify error:', err);
@@ -267,152 +249,51 @@ router.post('/payout/send', protect, authorize('admin'), async (req, res) => {
 
     const cleanPhone = receiverPhone.replace(/[^0-9]/g, '');
 
-    if (payout.method === 'moncash' && process.env.MONCASH_CLIENT_ID) {
-      const mc = getMoncash();
-      mc.transfert.create({
-        receiver: cleanPhone,
+    // All payouts are admin-approved manual transfers
+    // Admin sends via MonCash app, NatCash *202#, or bank, then marks as paid
+    const methodInstructions = {
+      moncash: {
+        step1: 'Open MonCash app on your phone',
+        step2: 'Select "Voye Lajan" (Send Money)',
+        step3: `Enter receiver: ${cleanPhone}`,
+        step4: `Amount: ${payout.amount} HTG`,
+        step5: 'Confirm and save the transaction reference',
+        step6: 'Use the mark-paid endpoint with the MonCash reference'
+      },
+      natcash: {
+        step1: 'Dial *202# on Natcom phone',
+        step2: 'Select "Send Money"',
+        step3: `Enter: ${cleanPhone}`,
+        step4: `Amount: ${payout.amount} HTG`,
+        step5: 'Confirm with NatCash PIN',
+        step6: 'Use the mark-paid endpoint with reference number'
+      },
+      bank: {
+        step1: `Transfer ${payout.amount} HTG to ${payout.details?.bankName || 'bank account'}`,
+        step2: `Account: ${payout.details?.accountNumber || 'N/A'}`,
+        step3: 'Use the mark-paid endpoint with bank reference'
+      }
+    };
+
+    payout.status = 'approved';
+    payout.approvedAt = new Date();
+    payout.approvedBy = req.user._id;
+    payout.adminNote = `${payout.method} payout approved: ${payout.amount} HTG to ${cleanPhone}`;
+    await payout.save();
+
+    res.json({
+      success: true,
+      data: {
+        payoutId: payout._id,
+        status: 'approved',
+        method: payout.method,
         amount: payout.amount,
-        desc: `Koutye Biznis payout - ${koutye?.koutyeCode || 'N/A'}`
-      }, async (err, transfert) => {
-        if (err) {
-          payout.status = 'failed';
-          payout.adminNote = `MonCash transfer failed: ${err.description || err.message || 'Unknown error'}`;
-          await payout.save();
-          return res.status(500).json({
-            success: false,
-            message: 'MonCash transfer failed: ' + (err.description || err.message)
-          });
-        }
-
-        // Mark commissions as paid
-        const commissions = await KoutyeCommission.find({
-          koutye: payout.koutye,
-          status: { $in: ['validated', 'approved'] }
-        }).sort({ createdAt: 1 });
-
-        let remaining = payout.amount;
-        for (const c of commissions) {
-          if (remaining <= 0) break;
-          c.status = 'paid';
-          c.paidAt = new Date();
-          remaining -= c.amount;
-          await c.save();
-        }
-
-        payout.status = 'paid';
-        payout.paidAt = new Date();
-        payout.processedBy = req.user._id;
-        payout.providerReference = transfert?.transaction_id || transfert?.transactionId || JSON.stringify(transfert);
-        if (!payout.approvedAt) {
-          payout.approvedAt = new Date();
-          payout.approvedBy = req.user._id;
-        }
-        await payout.save();
-
-        if (koutye) {
-          koutye.stats.paidEarnings += payout.amount;
-          koutye.stats.pendingEarnings = Math.max(0, koutye.stats.pendingEarnings - payout.amount);
-          koutye.stats.totalPayouts += 1;
-          koutye.lastPayoutDate = new Date();
-          await koutye.save();
-        }
-
-        res.json({
-          success: true,
-          data: {
-            payoutId: payout._id,
-            status: 'paid',
-            method: 'moncash',
-            amount: payout.amount,
-            receiver: cleanPhone,
-            reference: payout.providerReference
-          }
-        });
-      });
-    } else if (payout.method === 'natcash') {
-      // NatCash has no API - mark as approved, admin sends manually via *202#
-      payout.status = 'approved';
-      payout.approvedAt = new Date();
-      payout.approvedBy = req.user._id;
-      payout.adminNote = `NatCash manual payout: Send ${payout.amount} HTG to ${cleanPhone} via *202#`;
-      await payout.save();
-
-      res.json({
-        success: true,
-        data: {
-          payoutId: payout._id,
-          status: 'approved',
-          method: 'natcash',
-          instructions: {
-            step1: 'Dial *202# on Natcom phone',
-            step2: 'Select "Send Money"',
-            step3: `Enter: ${cleanPhone}`,
-            step4: `Amount: ${payout.amount} HTG`,
-            step5: 'Confirm with NatCash PIN',
-            step6: 'After sending, use mark-paid endpoint with reference number'
-          }
-        }
-      });
-    } else if (payout.method === 'bank' || payout.method === 'manual') {
-      payout.status = 'approved';
-      payout.approvedAt = new Date();
-      payout.approvedBy = req.user._id;
-      payout.adminNote = `Bank/manual payout approved: ${payout.amount} HTG to ${payout.details?.bankName || 'N/A'} - ${payout.details?.accountNumber || cleanPhone}`;
-      await payout.save();
-
-      res.json({
-        success: true,
-        data: {
-          payoutId: payout._id,
-          status: 'approved',
-          method: payout.method,
-          message: 'Approved for manual processing. Use mark-paid after completing transfer.',
-          details: payout.details
-        }
-      });
-    } else {
-      // Demo mode (no MonCash credentials)
-      const commissions = await KoutyeCommission.find({
-        koutye: payout.koutye,
-        status: { $in: ['validated', 'approved'] }
-      }).sort({ createdAt: 1 });
-
-      let remaining = payout.amount;
-      for (const c of commissions) {
-        if (remaining <= 0) break;
-        c.status = 'paid';
-        c.paidAt = new Date();
-        remaining -= c.amount;
-        await c.save();
+        receiver: cleanPhone,
+        koutyeCode: koutye?.koutyeCode,
+        instructions: methodInstructions[payout.method] || methodInstructions.moncash,
+        markPaidUrl: `/api/koutye/admin/payouts/${payout._id}/mark-paid`
       }
-
-      payout.status = 'paid';
-      payout.paidAt = new Date();
-      payout.processedBy = req.user._id;
-      payout.providerReference = 'DEMO-' + generateOrderId('pay');
-      payout.approvedAt = new Date();
-      payout.approvedBy = req.user._id;
-      await payout.save();
-
-      if (koutye) {
-        koutye.stats.paidEarnings += payout.amount;
-        koutye.stats.pendingEarnings = Math.max(0, koutye.stats.pendingEarnings - payout.amount);
-        koutye.stats.totalPayouts += 1;
-        koutye.lastPayoutDate = new Date();
-        await koutye.save();
-      }
-
-      res.json({
-        success: true,
-        data: {
-          payoutId: payout._id,
-          status: 'paid',
-          mode: 'demo',
-          amount: payout.amount,
-          reference: payout.providerReference
-        }
-      });
-    }
+    });
   } catch (err) {
     console.error('Payout send error:', err);
     res.status(500).json({ success: false, message: 'Server error' });

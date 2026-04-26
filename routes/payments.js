@@ -5,23 +5,38 @@ const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const Ride = require('../models/Ride');
 
-// MonCash SDK setup
-let moncash = null;
-function getMoncash() {
-  if (!moncash) {
-    const Moncash = require('moncash');
-    moncash = new Moncash({
-      mode: process.env.MONCASH_MODE || 'sandbox',
-      clientId: process.env.MONCASH_CLIENT_ID || '',
-      clientSecret: process.env.MONCASH_CLIENT_SECRET || ''
-    });
-  }
-  return moncash;
-}
+// SolutionIP (Pey'M PlopPlop) payment gateway
+const SOLUTIONIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
+const SOLUTIONIP_CLIENT_ID = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
 
-// Helper: generate unique order ID
 function generateOrderId(prefix) {
   return prefix + '_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+}
+
+async function createSolutionIPPayment(referenceId, amount, paymentMethod) {
+  const response = await fetch(`${SOLUTIONIP_URL}/api/paiement-marchand`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: SOLUTIONIP_CLIENT_ID,
+      refference_id: referenceId,
+      montant: amount,
+      payment_method: paymentMethod || 'all'
+    })
+  });
+  return response.json();
+}
+
+async function verifySolutionIPPayment(referenceId) {
+  const response = await fetch(`${SOLUTIONIP_URL}/api/paiement-verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: SOLUTIONIP_CLIENT_ID,
+      refference_id: referenceId
+    })
+  });
+  return response.json();
 }
 
 // ─── MonCash: Create Payment (wallet top-up) ───
@@ -46,39 +61,27 @@ router.post('/moncash/topup', protect, async (req, res) => {
       description: 'Wallet top-up via MonCash'
     });
 
-    // If MonCash credentials are configured, use real API
-    if (process.env.MONCASH_CLIENT_ID) {
-      const mc = getMoncash();
-      mc.payment.create({ amount: amount, orderId: orderId }, (err, payment) => {
-        if (err) {
-          return res.status(500).json({ success: false, message: 'MonCash error: ' + (err.description || err.message) });
-        }
-        const redirectUrl = mc.payment.redirectUri(payment);
+    try {
+      const sipResult = await createSolutionIPPayment(orderId, amount, 'all');
+      if (sipResult.status === true) {
         return res.json({
           success: true,
           orderId: orderId,
           transactionId: transaction._id,
-          redirectUrl: redirectUrl,
+          paymentUrl: sipResult.url,
+          sipTransactionId: sipResult.transaction_id,
           mode: 'live'
         });
-      });
-    } else {
-      // Demo mode - simulate payment success
-      transaction.status = 'completed';
-      await transaction.save();
-
-      // Credit wallet
-      await User.findByIdAndUpdate(req.user._id, {
-        $inc: { 'wallet.balance': amount }
-      });
-
-      return res.json({
-        success: true,
-        orderId: orderId,
-        transactionId: transaction._id,
-        mode: 'demo',
-        message: 'Demo mode: ' + amount + ' HTG added to wallet'
-      });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: sipResult.message || 'Payment creation failed',
+          orderId: orderId
+        });
+      }
+    } catch (sipErr) {
+      console.error('SolutionIP error:', sipErr);
+      return res.status(500).json({ success: false, message: 'Payment gateway unavailable' });
     }
   } catch (error) {
     console.error('MonCash topup error:', error);
@@ -113,36 +116,26 @@ router.post('/moncash/ride', protect, async (req, res) => {
       description: 'Ride payment via MonCash'
     });
 
-    if (process.env.MONCASH_CLIENT_ID) {
-      const mc = getMoncash();
-      mc.payment.create({ amount: amount, orderId: orderId }, (err, payment) => {
-        if (err) {
-          return res.status(500).json({ success: false, message: 'MonCash error' });
-        }
-        const redirectUrl = mc.payment.redirectUri(payment);
+    try {
+      const sipResult = await createSolutionIPPayment(orderId, amount, 'all');
+      if (sipResult.status === true) {
         return res.json({
           success: true,
           orderId: orderId,
           transactionId: transaction._id,
-          redirectUrl: redirectUrl,
+          paymentUrl: sipResult.url,
+          sipTransactionId: sipResult.transaction_id,
           mode: 'live'
         });
-      });
-    } else {
-      // Demo mode
-      transaction.status = 'completed';
-      await transaction.save();
-      ride.paymentStatus = 'paid';
-      ride.paymentMethod = 'moncash';
-      await ride.save();
-
-      return res.json({
-        success: true,
-        orderId: orderId,
-        transactionId: transaction._id,
-        mode: 'demo',
-        message: 'Demo mode: Ride paid (' + amount + ' HTG)'
-      });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: sipResult.message || 'Payment creation failed'
+        });
+      }
+    } catch (sipErr) {
+      console.error('SolutionIP ride payment error:', sipErr);
+      return res.status(500).json({ success: false, message: 'Payment gateway unavailable' });
     }
   } catch (error) {
     console.error('MonCash ride payment error:', error);
@@ -168,40 +161,37 @@ router.get('/moncash/verify', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Transaction not found or already processed' });
     }
 
-    if (process.env.MONCASH_CLIENT_ID) {
-      const mc = getMoncash();
-      const verifyFn = orderId
-        ? (cb) => mc.capture.getByOrderId(orderId, cb)
-        : (cb) => mc.capture.getByTransactionId(mcTransId, cb);
+    const sipResult = await verifySolutionIPPayment(orderId || mcTransId);
 
-      verifyFn((err, capture) => {
-        if (err) {
-          return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    if (sipResult.status === true && sipResult.trans_status === 'ok') {
+      transaction.status = 'completed';
+      await transaction.save();
+
+      if (transaction.type === 'topup') {
+        await User.findByIdAndUpdate(transaction.user, {
+          $inc: { 'wallet.balance': transaction.amount }
+        });
+      } else if (transaction.type === 'payment' && transaction.ride) {
+        await Ride.findByIdAndUpdate(transaction.ride, {
+          paymentStatus: 'paid',
+          paymentMethod: sipResult.method || 'moncash'
+        });
+      }
+
+      return res.json({
+        success: true,
+        payment: {
+          amount: sipResult.montant,
+          method: sipResult.method,
+          date: sipResult.date,
+          time: sipResult.heure
         }
-
-        if (capture.payment) {
-          // Mark transaction as completed
-          transaction.status = 'completed';
-          transaction.save();
-
-          // Process based on transaction type
-          if (transaction.type === 'topup') {
-            User.findByIdAndUpdate(transaction.user, {
-              $inc: { 'wallet.balance': transaction.amount }
-            }).exec();
-          } else if (transaction.type === 'payment' && transaction.ride) {
-            Ride.findByIdAndUpdate(transaction.ride, {
-              paymentStatus: 'paid',
-              paymentMethod: 'moncash'
-            }).exec();
-          }
-
-          return res.json({ success: true, payment: capture.payment });
-        }
-        return res.status(400).json({ success: false, message: 'Payment not completed' });
       });
     } else {
-      return res.json({ success: true, mode: 'demo', message: 'Demo mode - no verification needed' });
+      return res.status(400).json({
+        success: false,
+        message: sipResult.message || 'Payment not completed'
+      });
     }
   } catch (error) {
     console.error('MonCash verify error:', error);
@@ -230,42 +220,27 @@ router.post('/natcash/topup', protect, async (req, res) => {
       description: 'Wallet top-up via NatCash. Phone: ' + (natcashPhone || 'N/A')
     });
 
-    // NatCash doesn't have a public API - use manual verification flow
-    // User sends money via *202# to the business NatCash number
-    // Admin verifies and approves manually, or we check via webhook later
-    const businessNumber = process.env.NATCASH_BUSINESS_NUMBER || '+50948XXXXXXX';
-
-    if (process.env.NATCASH_AUTO_VERIFY === 'true') {
-      // Future: auto-verify via NatCash business API when available
-      return res.json({
-        success: true,
-        orderId: orderId,
-        transactionId: transaction._id,
-        mode: 'pending_verification',
-        instructions: {
-          step1: 'Dial *202# on your Natcom phone',
-          step2: 'Select "Send Money"',
-          step3: 'Enter business number: ' + businessNumber,
-          step4: 'Enter amount: ' + amount + ' HTG',
-          step5: 'Confirm with your NatCash PIN',
-          reference: orderId
-        }
-      });
-    } else {
-      // Demo mode
-      transaction.status = 'completed';
-      await transaction.save();
-      await User.findByIdAndUpdate(req.user._id, {
-        $inc: { 'wallet.balance': amount }
-      });
-
-      return res.json({
-        success: true,
-        orderId: orderId,
-        transactionId: transaction._id,
-        mode: 'demo',
-        message: 'Demo mode: ' + amount + ' HTG added to wallet'
-      });
+    // NatCash via SolutionIP gateway
+    try {
+      const sipResult = await createSolutionIPPayment(orderId, amount, 'natcash');
+      if (sipResult.status === true) {
+        return res.json({
+          success: true,
+          orderId: orderId,
+          transactionId: transaction._id,
+          paymentUrl: sipResult.url,
+          sipTransactionId: sipResult.transaction_id,
+          mode: 'live'
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: sipResult.message || 'NatCash payment creation failed'
+        });
+      }
+    } catch (sipErr) {
+      console.error('SolutionIP NatCash error:', sipErr);
+      return res.status(500).json({ success: false, message: 'Payment gateway unavailable' });
     }
   } catch (error) {
     console.error('NatCash topup error:', error);
@@ -297,20 +272,27 @@ router.post('/natcash/ride', protect, async (req, res) => {
       description: 'Ride payment via NatCash'
     });
 
-    // Demo mode
-    transaction.status = 'completed';
-    await transaction.save();
-    ride.paymentStatus = 'paid';
-    ride.paymentMethod = 'natcash';
-    await ride.save();
-
-    return res.json({
-      success: true,
-      orderId: orderId,
-      transactionId: transaction._id,
-      mode: 'demo',
-      message: 'Demo mode: Ride paid (' + amount + ' HTG)'
-    });
+    try {
+      const sipResult = await createSolutionIPPayment(orderId, amount, 'natcash');
+      if (sipResult.status === true) {
+        return res.json({
+          success: true,
+          orderId: orderId,
+          transactionId: transaction._id,
+          paymentUrl: sipResult.url,
+          sipTransactionId: sipResult.transaction_id,
+          mode: 'live'
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: sipResult.message || 'NatCash payment creation failed'
+        });
+      }
+    } catch (sipErr) {
+      console.error('SolutionIP NatCash ride error:', sipErr);
+      return res.status(500).json({ success: false, message: 'Payment gateway unavailable' });
+    }
   } catch (error) {
     console.error('NatCash ride payment error:', error);
     res.status(500).json({ success: false, message: 'Payment failed' });
