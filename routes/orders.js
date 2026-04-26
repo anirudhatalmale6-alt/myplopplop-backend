@@ -84,11 +84,11 @@ router.post('/', protect, [
 
     var total = subtotal + deliveryFee + diasporaFee;
 
-    // Referral: 5% of platform commission
+    // Referral: 10% of platform commission
     var referralBonus = 0;
     var customer = await User.findById(req.user._id);
     if (customer.referredBy) {
-      referralBonus = Math.round(commission * 0.05);
+      referralBonus = Math.round(commission * 0.10);
       var referrer = await User.findById(customer.referredBy);
       if (referrer) {
         referrer.wallet.balance += referralBonus;
@@ -101,7 +101,7 @@ router.post('/', protect, [
           currency: 'HTG',
           method: 'wallet',
           status: 'completed',
-          description: 'Referral bonus: 5% of order commission'
+          description: 'Referral bonus: 10% of order commission'
         });
       }
     }
