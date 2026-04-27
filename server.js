@@ -26,6 +26,7 @@ const payoutRoutes = require('./routes/payouts');
 const featuredRoutes = require('./routes/featured');
 const koutyeRoutes = require('./routes/koutye');
 const koutyePaymentRoutes = require('./routes/koutye-payments');
+const utilityRoutes = require('./routes/utility');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -75,6 +76,7 @@ app.use('/api/payouts', payoutRoutes);
 app.use('/api/featured', featuredRoutes);
 app.use('/api/koutye', koutyeRoutes);
 app.use('/api/koutye-payments', koutyePaymentRoutes);
+app.use('/api/utility', utilityRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
