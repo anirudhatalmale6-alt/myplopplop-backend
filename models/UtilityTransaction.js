@@ -43,18 +43,22 @@ const utilityTransactionSchema = new mongoose.Schema({
   },
   payment_status: {
     type: String,
-    enum: ['pending', 'processing', 'completed', 'failed', 'refunded'],
+    enum: ['pending', 'paid', 'processing', 'completed', 'failed', 'refunded'],
     default: 'pending'
   },
   processing_status: {
     type: String,
-    enum: ['new', 'processing', 'completed', 'manual_review'],
+    enum: ['new', 'processing', 'completed', 'manual_review', 'failed'],
     default: 'new'
   },
   provider_reference: String,
   payment_url: String,
   sip_transaction_id: String,
   token: String,
+  token_status: {
+    type: String,
+    enum: ['pending', 'generated', 'sent', 'failed']
+  },
   receipt_url: String,
   admin_notes: String,
   koutye_code: String,
