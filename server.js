@@ -28,6 +28,7 @@ const featuredRoutes = require('./routes/featured');
 const koutyeRoutes = require('./routes/koutye');
 const koutyePaymentRoutes = require('./routes/koutye-payments');
 const utilityRoutes = require('./routes/utility');
+const inventoryRoutes = require('./routes/inventory');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -79,6 +80,7 @@ app.use('/api/featured', featuredRoutes);
 app.use('/api/koutye', koutyeRoutes);
 app.use('/api/koutye-payments', koutyePaymentRoutes);
 app.use('/api/utility', utilityRoutes);
+app.use('/api/inventory', inventoryRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
