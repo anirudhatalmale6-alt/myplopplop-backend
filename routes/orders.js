@@ -12,7 +12,7 @@ const { protect, authorize } = require('../middleware/auth');
 router.post('/', protect, [
   body('storeId').notEmpty().withMessage('Store is required'),
   body('items').isArray({ min: 1 }).withMessage('At least one item required'),
-  body('paymentMethod').isIn(['moncash', 'natcash', 'wallet', 'cash']).withMessage('Invalid payment method')
+  body('paymentMethod').isIn(['moncash', 'natcash', 'wallet', 'card']).withMessage('Invalid payment method')
 ], async function(req, res) {
   try {
     var errors = validationResult(req);

@@ -78,7 +78,7 @@ const orderSchema = new mongoose.Schema({
   // Payment
   paymentMethod: {
     type: String,
-    enum: ['moncash', 'natcash', 'wallet', 'cash', 'card'],
+    enum: ['moncash', 'natcash', 'wallet', 'card'],
     default: 'moncash'
   },
   paymentStatus: {
