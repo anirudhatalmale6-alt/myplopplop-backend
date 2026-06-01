@@ -29,6 +29,7 @@ const koutyeRoutes = require('./routes/koutye');
 const koutyePaymentRoutes = require('./routes/koutye-payments');
 const utilityRoutes = require('./routes/utility');
 const inventoryRoutes = require('./routes/inventory');
+const dispatchRoutes = require('./routes/dispatch');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -81,6 +82,7 @@ app.use('/api/koutye', koutyeRoutes);
 app.use('/api/koutye-payments', koutyePaymentRoutes);
 app.use('/api/utility', utilityRoutes);
 app.use('/api/inventory', inventoryRoutes);
+app.use('/api/dispatch', dispatchRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -116,6 +118,18 @@ io.on('connection', (socket) => {
   socket.on('join_ride', (data) => {
     socket.join(`ride_${data.rideId}`);
     console.log(`Joined ride room: ride_${data.rideId}`);
+  });
+
+  // Merchant joins store room for order notifications
+  socket.on('join_store', (data) => {
+    socket.join(`store_${data.storeId}`);
+    console.log(`Merchant joined store room: store_${data.storeId}`);
+  });
+
+  // Customer joins order room for tracking
+  socket.on('join_order', (data) => {
+    socket.join(`order_${data.orderId}`);
+    console.log(`Joined order room: order_${data.orderId}`);
   });
 
   // Driver sends location update during ride

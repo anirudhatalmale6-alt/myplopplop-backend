@@ -113,7 +113,11 @@ const orderSchema = new mongoose.Schema({
   customerReview: String,
   merchantRating: { type: Number, min: 1, max: 5 },
 
-  notes: String
+  notes: String,
+
+  // MsouWout dispatch integration
+  msouwoutRideId: String,
+  msouwoutTrackingCode: String
 }, {
   timestamps: true
 });

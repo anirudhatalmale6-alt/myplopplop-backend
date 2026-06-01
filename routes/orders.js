@@ -165,6 +165,17 @@ router.post('/', protect, [
 
     await order.populate('store', 'name logo phone');
 
+    // Emit real-time notification to merchant
+    var io = req.app.get('io');
+    if (io) {
+      io.to('store_' + store._id).emit('new_order', {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        total: order.total,
+        itemCount: orderItems.length
+      });
+    }
+
     res.status(201).json({ success: true, data: order });
   } catch (err) {
     console.error('Place order error:', err);
@@ -310,6 +321,20 @@ router.put('/:id/status', protect, [
     }
 
     await order.save();
+
+    // Emit real-time status update
+    var io = req.app.get('io');
+    if (io) {
+      io.to('order_' + order._id).emit('order_status_update', {
+        orderId: order._id,
+        status: order.status,
+        updatedAt: new Date()
+      });
+      io.to('store_' + order.store).emit('order_status_update', {
+        orderId: order._id,
+        status: order.status
+      });
+    }
 
     res.json({ success: true, data: order });
   } catch (err) {
