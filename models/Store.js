@@ -74,7 +74,7 @@ const storeSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: ['pending', 'active', 'suspended', 'closed'],
-    default: 'pending'
+    default: 'active'
   },
   isVerified: { type: Boolean, default: false },
   isFeatured: { type: Boolean, default: false }

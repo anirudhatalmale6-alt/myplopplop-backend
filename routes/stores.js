@@ -127,7 +127,7 @@ router.put('/:id', protect, async function(req, res) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    var allowed = ['name', 'description', 'phone', 'email', 'address', 'openingHours', 'deliveryOptions', 'logo', 'coverImage'];
+    var allowed = ['name', 'description', 'phone', 'email', 'address', 'openingHours', 'deliveryOptions', 'logo', 'coverImage', 'status'];
     allowed.forEach(function(field) {
       if (req.body[field] !== undefined) store[field] = req.body[field];
     });
@@ -202,6 +202,16 @@ router.get('/:id/orders', protect, async function(req, res) {
     });
   } catch (err) {
     console.error('Get store orders error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── ADMIN: Activate all pending stores ───
+router.patch('/admin/activate-all', protect, authorize('admin'), async function(req, res) {
+  try {
+    var result = await Store.updateMany({ status: 'pending' }, { $set: { status: 'active' } });
+    res.json({ success: true, activated: result.modifiedCount || result.nModified || 0 });
+  } catch (err) {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
