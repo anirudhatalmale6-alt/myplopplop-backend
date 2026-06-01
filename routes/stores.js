@@ -103,7 +103,10 @@ router.post('/', protect, [
       phone: req.body.phone || user.phone,
       email: req.body.email || user.email,
       address: req.body.address || {},
-      deliveryOptions: req.body.deliveryOptions || {}
+      logo: req.body.logo || '',
+      coverImage: req.body.coverImage || '',
+      deliveryOptions: req.body.deliveryOptions || {},
+      status: 'active'
     });
 
     res.status(201).json({ success: true, data: store });
