@@ -221,9 +221,13 @@ router.patch('/admin/activate-all', protect, authorize('admin'), async function(
 // ─── ADD PRODUCT ───
 router.post('/:storeId/products', protect, [
   body('name').trim().notEmpty(),
-  body('price').isNumeric({ min: 0 })
+  body('price').isNumeric()
 ], async function(req, res) {
   try {
+    var errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+    }
     var store = await Store.findById(req.params.storeId);
     if (!store) {
       return res.status(404).json({ success: false, message: 'Store not found' });
@@ -251,6 +255,52 @@ router.post('/:storeId/products', protect, [
     res.status(201).json({ success: true, data: product });
   } catch (err) {
     console.error('Add product error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── BULK ADD PRODUCTS ───
+router.post('/:storeId/products/bulk', protect, async function(req, res) {
+  try {
+    var store = await Store.findById(req.params.storeId);
+    if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+    if (store.owner.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    var items = req.body.products;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, message: 'No products provided' });
+    }
+
+    // Delete existing products for this store first (full sync)
+    await Product.deleteMany({ store: store._id });
+
+    var created = [];
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item.name || !item.name.trim()) continue;
+      var product = await Product.create({
+        store: store._id,
+        name: item.name.trim(),
+        description: item.description || '',
+        price: parseFloat(item.price) || 0,
+        category: item.category || 'Products',
+        images: item.images || [],
+        unit: item.unit || 'piece',
+        inStock: true
+      });
+      created.push(product);
+    }
+
+    store.stats.totalProducts = created.length;
+    await store.save();
+
+    res.status(201).json({ success: true, data: created, count: created.length });
+  } catch (err) {
+    console.error('Bulk add products error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
