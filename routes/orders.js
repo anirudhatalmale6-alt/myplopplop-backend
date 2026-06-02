@@ -39,6 +39,10 @@ router.post('/', protect, [
         return res.status(400).json({ success: false, message: product.name + ' is out of stock' });
       }
       var qty = item.quantity || 1;
+      // Check sufficient stock (stockQuantity -1 means unlimited)
+      if (product.stockQuantity >= 0 && product.stockQuantity < qty) {
+        return res.status(400).json({ success: false, message: product.name + ' - only ' + product.stockQuantity + ' left in stock' });
+      }
       var lineTotal = product.price * qty;
       orderItems.push({
         product: product._id,
@@ -50,10 +54,9 @@ router.post('/', protect, [
       subtotal += lineTotal;
 
       // Update stock if tracked
-      if (product.stockQuantity > 0) {
+      if (product.stockQuantity >= 0) {
         product.stockQuantity -= qty;
         if (product.stockQuantity <= 0) product.inStock = false;
-        await product.save();
       }
       product.orderCount += qty;
       await product.save();
