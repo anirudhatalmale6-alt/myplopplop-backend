@@ -540,4 +540,71 @@ router.post('/listings/:id/reprocess', protect, authorize('admin'), async functi
   }
 });
 
+// ─── AI: SCORE A LEAD ───
+router.get('/leads/:id/score', protect, async function(req, res) {
+  try {
+    var lead = await SellerLead.findById(req.params.id);
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Lead not found' });
+    }
+    var score = aiEngine.scoreSellerLead(lead);
+    lead.leadScore = score;
+    await lead.save();
+    res.json({ success: true, data: { leadScore: score, lead: lead } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── WHATSAPP OUTREACH TEMPLATES ───
+router.get('/leads/:id/outreach', protect, async function(req, res) {
+  try {
+    var lead = await SellerLead.findById(req.params.id).populate('listings', 'title');
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Lead not found' });
+    }
+    var templates = aiEngine.getOutreachTemplates(lead);
+    var whatsappBase = 'https://wa.me/' + (lead.whatsapp || lead.phone || '').replace(/[^0-9]/g, '');
+    res.json({
+      success: true,
+      data: {
+        templates: templates,
+        whatsappLinks: {
+          initial: whatsappBase + '?text=' + encodeURIComponent(templates.initial),
+          followUp: whatsappBase + '?text=' + encodeURIComponent(templates.followUp),
+          storeReady: whatsappBase + '?text=' + encodeURIComponent(templates.storeReady),
+          activation: whatsappBase + '?text=' + encodeURIComponent(templates.activation)
+        }
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── LEAD PIPELINE STATS ───
+router.get('/leads/pipeline', protect, async function(req, res) {
+  try {
+    var pipeline = await SellerLead.aggregate([
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]);
+    var stats = {};
+    pipeline.forEach(function(p) { stats[p._id] = p.count; });
+
+    var total = await SellerLead.countDocuments();
+    var activated = await SellerLead.countDocuments({ status: 'activated' });
+
+    res.json({
+      success: true,
+      data: {
+        pipeline: stats,
+        total: total,
+        conversionRate: total > 0 ? Math.round((activated / total) * 100) : 0
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 module.exports = router;

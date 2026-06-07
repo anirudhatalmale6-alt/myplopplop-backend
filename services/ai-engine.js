@@ -293,10 +293,51 @@ async function processListing(listingId) {
   }
 }
 
+// AI Lead Scoring
+function scoreSellerLead(lead) {
+  var score = 30;
+
+  var highValueCategories = { 'electronics': 25, 'vehicles': 25, 'real-estate': 20, 'supermarket': 20, 'restaurant': 15, 'pharmacy': 15, 'hardware': 15, 'wholesale': 20 };
+  var mediumCategories = { 'retail': 10, 'construction': 10, 'agriculture': 10, 'bakery': 10, 'services': 10, 'marketplace': 5 };
+
+  var cat = (lead.category || '').toLowerCase();
+  if (highValueCategories[cat]) score += highValueCategories[cat];
+  else if (mediumCategories[cat]) score += mediumCategories[cat];
+
+  if (lead.listingCount > 5) score += 15;
+  else if (lead.listingCount > 1) score += 8;
+
+  if (lead.facebookUrl) score += 10;
+  if (lead.whatsapp) score += 5;
+  if (lead.email) score += 5;
+  if (lead.phone) score += 5;
+  if (lead.name && lead.name.length > 3) score += 5;
+
+  return Math.min(100, score);
+}
+
+// WhatsApp Outreach Templates
+function getOutreachTemplates(lead) {
+  var name = lead.name || 'zanmi';
+  var storeUrl = '';
+  if (lead.listings && lead.listings.length > 0) {
+    storeUrl = 'myplopplop.com/biznisiq/';
+  }
+
+  return {
+    initial: 'Bonjou ' + name + '! Nou remake w ap vann pwodwi sou entènèt. Nou kapab kreye yon magazen GRATIS pou ou sou MyPlopPlop ki aksepte MonCash, NatCash, Kat Kredi ak livrezon entegre. Enterese? Vizite: myplopplop.com',
+    followUp: 'Bonjou ' + name + '! Mwen te kontakte ou konsènan MyPlopPlop. Magazen gratis la toujou disponib. Ou vle kòmanse jodi a? Klike la: myplopplop.com',
+    storeReady: 'Bòn nouvèl ' + name + '! Magazen ou a sou MyPlopPlop prè! ' + (storeUrl ? 'Klike la pou wè li: ' + storeUrl + '. ' : '') + 'Kounye a ou ka ajoute pwodwi ou yo epi kòmanse vann!',
+    activation: 'Felisitasyon ' + name + '! Magazen ou a aktif sou MyPlopPlop. Ou ka resevwa peman MonCash, NatCash, ak Kat Kredi. Kòmanse pataje lyen magazen ou a ak kliyan ou yo!'
+  };
+}
+
 module.exports = {
   categorizeListingAI: categorizeListingAI,
   detectDuplicates: detectDuplicates,
   calculateTrustScore: calculateTrustScore,
   matchBuyerAlerts: matchBuyerAlerts,
-  processListing: processListing
+  processListing: processListing,
+  scoreSellerLead: scoreSellerLead,
+  getOutreachTemplates: getOutreachTemplates
 };
