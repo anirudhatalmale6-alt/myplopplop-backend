@@ -4,6 +4,7 @@ const Listing = require('../models/Listing');
 const BuyerAlert = require('../models/BuyerAlert');
 const SellerLead = require('../models/SellerLead');
 const { protect, authorize } = require('../middleware/auth');
+const aiEngine = require('../services/ai-engine');
 
 // ═══ PUBLIC ROUTES ═══
 
@@ -133,6 +134,15 @@ router.post('/listings', protect, async function(req, res) {
       source: 'user-submitted',
       tags: req.body.tags || [],
       expiresAt: req.body.expiresAt || undefined
+    });
+
+    // Run AI pipeline in background (don't block response)
+    aiEngine.processListing(listing._id).then(function(result) {
+      if (result) {
+        console.log('BiznisIQ AI: Processed listing ' + listing.title + ' | Trust: ' + result.trustScore + ' | Duplicates: ' + result.duplicates.length + ' | Alert matches: ' + result.alertMatches);
+      }
+    }).catch(function(err) {
+      console.error('BiznisIQ AI background error:', err.message);
     });
 
     res.status(201).json({ success: true, data: listing });
@@ -404,6 +414,59 @@ router.get('/dashboard', protect, authorize('admin'), async function(req, res) {
     });
   } catch (err) {
     console.error('Dashboard error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── AI: ANALYZE LISTING ───
+router.get('/listings/:id/analyze', protect, async function(req, res) {
+  try {
+    var listing = await Listing.findById(req.params.id);
+    if (!listing) {
+      return res.status(404).json({ success: false, message: 'Listing not found' });
+    }
+
+    var duplicates = await aiEngine.detectDuplicates(listing);
+    var trustScore = aiEngine.calculateTrustScore(listing);
+    var alertMatches = await aiEngine.matchBuyerAlerts(listing);
+
+    res.json({
+      success: true,
+      data: {
+        trustScore: trustScore,
+        duplicates: duplicates.map(function(d) {
+          return { id: d.listing._id, title: d.listing.title, reason: d.reason, score: d.score };
+        }),
+        alertMatches: alertMatches.length,
+        category: listing.category,
+        tags: listing.tags
+      }
+    });
+  } catch (err) {
+    console.error('Analyze listing error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── AI: REPROCESS LISTING ───
+router.post('/listings/:id/reprocess', protect, authorize('admin'), async function(req, res) {
+  try {
+    var result = await aiEngine.processListing(req.params.id);
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Listing not found or processing failed' });
+    }
+    res.json({
+      success: true,
+      data: {
+        trustScore: result.trustScore,
+        duplicates: result.duplicates.length,
+        alertMatches: result.alertMatches,
+        category: result.listing.category,
+        tags: result.listing.tags
+      }
+    });
+  } catch (err) {
+    console.error('Reprocess listing error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
