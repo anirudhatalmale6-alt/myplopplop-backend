@@ -4,8 +4,11 @@ var sellerLeadSchema = new mongoose.Schema({
   name: String,
   phone: String,
   email: String,
+  whatsapp: String,
+  facebookUrl: String,
   category: String,
   location: String,
+  capturedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   listingCount: {
     type: Number,
     default: 1
@@ -18,7 +21,7 @@ var sellerLeadSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['new', 'contacted', 'onboarding', 'converted', 'rejected'],
+    enum: ['new', 'contacted', 'follow-up', 'registered', 'activated', 'rejected'],
     default: 'new'
   },
   assignedKoutye: {

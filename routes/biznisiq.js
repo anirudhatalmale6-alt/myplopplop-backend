@@ -315,6 +315,75 @@ router.delete('/alerts/:id', protect, async function(req, res) {
   }
 });
 
+// ─── CREATE SELLER LEAD (Koutye/Ambassador capture) ───
+router.post('/leads', protect, async function(req, res) {
+  try {
+    var existingLead = null;
+    if (req.body.phone) {
+      existingLead = await SellerLead.findOne({ phone: req.body.phone.replace(/\s+/g, '') });
+    }
+    if (existingLead) {
+      if (req.body.notes) existingLead.notes = (existingLead.notes || '') + '\n' + req.body.notes;
+      if (req.body.facebookUrl) existingLead.facebookUrl = req.body.facebookUrl;
+      await existingLead.save();
+      return res.json({ success: true, data: existingLead, message: 'Lead updated (already existed)' });
+    }
+
+    var lead = await SellerLead.create({
+      name: req.body.name || req.body.businessName || '',
+      phone: (req.body.phone || '').replace(/\s+/g, ''),
+      email: req.body.email || '',
+      category: req.body.category || '',
+      location: req.body.location || req.body.city || '',
+      notes: req.body.notes || '',
+      facebookUrl: req.body.facebookUrl || '',
+      whatsapp: req.body.whatsapp || req.body.phone || '',
+      capturedBy: req.user._id,
+      leadScore: 50,
+      status: 'new'
+    });
+
+    res.status(201).json({ success: true, data: lead });
+  } catch (err) {
+    console.error('Create lead error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── GET MY CAPTURED LEADS ───
+router.get('/leads/my', protect, async function(req, res) {
+  try {
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    var leads = await SellerLead.find({ capturedBy: req.user._id })
+      .sort('-createdAt')
+      .limit(parseInt(req.query.limit) || 20);
+
+    var todayCount = await SellerLead.countDocuments({
+      capturedBy: req.user._id,
+      createdAt: { $gte: today }
+    });
+
+    var pipeline = await SellerLead.aggregate([
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]);
+
+    var statusCounts = {};
+    pipeline.forEach(function(p) { statusCounts[p._id] = p.count; });
+
+    res.json({
+      success: true,
+      data: leads,
+      todayCount: todayCount,
+      pipeline: statusCounts
+    });
+  } catch (err) {
+    console.error('Get my leads error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // ═══ ADMIN ROUTES ═══
 
 // ─── GET ALL SELLER LEADS ───
