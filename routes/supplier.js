@@ -249,4 +249,51 @@ router.get('/cj/orders', protect, authorize('admin'), async (req, res) => {
   }
 });
 
+// ─── ADMIN: Smart Import Phase 1 ───
+router.post('/cj/smart-import', protect, authorize('admin'), async (req, res) => {
+  try {
+    res.json({ success: true, message: 'Smart import started. This runs in the background.' });
+
+    cj.smartImportPhase1(function(progress) {
+      console.log('CJ Import: ' + progress.step + '/' + progress.total + ' - "' + progress.search + '" (' + progress.imported + ' imported)');
+    }).then(function(result) {
+      console.log('CJ Smart Import complete:', JSON.stringify(result));
+    }).catch(function(err) {
+      console.error('CJ Smart Import error:', err);
+    });
+  } catch (err) {
+    console.error('Smart import error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── ADMIN: Get Import Rules ───
+router.get('/cj/import-rules', protect, authorize('admin'), async (req, res) => {
+  res.json({ success: true, data: cj.IMPORT_RULES });
+});
+
+// ─── PUBLIC: Featured CJ USA Products ───
+router.get('/cj/featured', async (req, res) => {
+  try {
+    var limit = parseInt(req.query.limit) || 20;
+    var products = await cj.getFeaturedProducts(limit);
+    res.json({ success: true, data: products });
+  } catch (err) {
+    console.error('Featured products error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── PUBLIC: Featured CJ Products by Category ───
+router.get('/cj/featured/:category', async (req, res) => {
+  try {
+    var limit = parseInt(req.query.limit) || 10;
+    var products = await cj.getFeaturedByCategory(req.params.category, limit);
+    res.json({ success: true, data: products });
+  } catch (err) {
+    console.error('Featured by category error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 module.exports = router;

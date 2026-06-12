@@ -5,6 +5,69 @@ const InternationalOrder = require('../models/InternationalOrder');
 
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
 
+var IMPORT_RULES = {
+  maxWholesaleCostUSD: 100,
+  minRating: 4.5,
+  warehouseFilter: 'US',
+  phase1Categories: [
+    { search: 'phone case', category: 'phones-electronics', subcategory: 'phone-cases' },
+    { search: 'phone charger', category: 'phones-electronics', subcategory: 'chargers' },
+    { search: 'fast charger', category: 'phones-electronics', subcategory: 'chargers' },
+    { search: 'power bank', category: 'phones-electronics', subcategory: 'power-banks' },
+    { search: 'bluetooth earbuds', category: 'phones-electronics', subcategory: 'earbuds' },
+    { search: 'smart watch', category: 'phones-electronics', subcategory: 'smart-watches' },
+    { search: 'phone holder', category: 'phones-electronics', subcategory: 'phone-holders' },
+    { search: 'USB cable', category: 'phones-electronics', subcategory: 'chargers' },
+    { search: 'wireless charger', category: 'phones-electronics', subcategory: 'chargers' },
+    { search: 'solar flood light', category: 'solar-energy', subcategory: 'solar-flood-lights' },
+    { search: 'solar street light', category: 'solar-energy', subcategory: 'solar-street-lights' },
+    { search: 'solar security camera', category: 'solar-energy', subcategory: 'solar-panels' },
+    { search: 'solar power bank', category: 'solar-energy', subcategory: 'solar-batteries' },
+    { search: 'solar fan', category: 'solar-energy', subcategory: 'solar-fans' },
+    { search: 'solar generator', category: 'solar-energy', subcategory: 'solar-generators' },
+    { search: 'solar battery', category: 'solar-energy', subcategory: 'solar-batteries' },
+    { search: 'LED headlight car', category: 'auto-parts', subcategory: 'led-lights' },
+    { search: 'car phone mount', category: 'auto-parts', subcategory: 'phone-holders' },
+    { search: 'dash camera', category: 'auto-parts', subcategory: 'mirrors' },
+    { search: 'car seat cover', category: 'auto-parts', subcategory: 'seat-covers' },
+    { search: 'car floor mat', category: 'auto-parts', subcategory: 'floor-mats' },
+    { search: 'tire inflator', category: 'auto-parts', subcategory: 'tires' },
+    { search: 'jump starter', category: 'auto-parts', subcategory: 'batteries' },
+    { search: 'wig', category: 'beauty-personal-care', subcategory: 'wigs' },
+    { search: 'hair extension', category: 'beauty-personal-care', subcategory: 'hair-extensions' },
+    { search: 'ring light', category: 'beauty-personal-care', subcategory: 'salon-equipment' },
+    { search: 'makeup organizer', category: 'beauty-personal-care', subcategory: 'cosmetics' },
+    { search: 'beauty tools', category: 'beauty-personal-care', subcategory: 'cosmetics' },
+    { search: 'nail kit', category: 'beauty-personal-care', subcategory: 'cosmetics' },
+    { search: 'air fryer', category: 'home-kitchen', subcategory: 'air-fryers' },
+    { search: 'blender', category: 'home-kitchen', subcategory: 'blenders' },
+    { search: 'electric kettle', category: 'home-kitchen', subcategory: 'kitchen-sets' },
+    { search: 'water dispenser', category: 'home-kitchen', subcategory: 'water-dispensers' },
+    { search: 'mini fan', category: 'home-kitchen', subcategory: 'fans' },
+    { search: 'security camera', category: 'phones-electronics', subcategory: 'security-cameras' }
+  ],
+  avoidKeywords: [
+    'furniture', 'sofa', 'couch', 'desk', 'table', 'chair', 'bed', 'mattress',
+    'refrigerator', 'fridge', 'washing machine', 'dryer', 'dishwasher',
+    'wardrobe', 'cabinet', 'bookshelf', 'oversized'
+  ]
+};
+
+function passesImportFilter(product) {
+  var cost = parseFloat(product.sellPrice || product.productPrice || 0);
+  if (cost > IMPORT_RULES.maxWholesaleCostUSD) return false;
+  if (cost <= 0) return false;
+
+  var name = (product.productNameEn || product.productName || '').toLowerCase();
+  for (var i = 0; i < IMPORT_RULES.avoidKeywords.length; i++) {
+    if (name.indexOf(IMPORT_RULES.avoidKeywords[i]) !== -1) return false;
+  }
+
+  if (product.productRating && parseFloat(product.productRating) < IMPORT_RULES.minRating) return false;
+
+  return true;
+}
+
 async function getConfig() {
   var config = await SupplierConfig.findOne({ supplierType: 'CJ_USA' });
   if (!config) throw new Error('CJ USA supplier not configured');
@@ -339,6 +402,93 @@ async function getOrCreateCJStore() {
   return store;
 }
 
+async function smartImportPhase1(progressCallback) {
+  var config = await getConfig();
+  var store = await getOrCreateCJStore();
+  var imported = 0;
+  var skipped = 0;
+  var errors = [];
+  var categories = IMPORT_RULES.phase1Categories;
+
+  for (var c = 0; c < categories.length; c++) {
+    var cat = categories[c];
+    if (progressCallback) progressCallback({ step: c + 1, total: categories.length, search: cat.search, imported: imported });
+
+    try {
+      var page = 1;
+      var maxPages = 5;
+
+      while (page <= maxPages && imported < 1000) {
+        var results = await fetchProducts({ page: page, limit: 20, productName: cat.search });
+        if (!results || !results.list || results.list.length === 0) break;
+
+        for (var i = 0; i < results.list.length; i++) {
+          var p = results.list[i];
+
+          if (!passesImportFilter(p)) {
+            skipped++;
+            continue;
+          }
+
+          // Check USA warehouse
+          var hasUSWarehouse = true;
+          if (p.sourceFrom) {
+            hasUSWarehouse = p.sourceFrom.indexOf('US') !== -1 || p.sourceFrom.indexOf('USA') !== -1;
+          }
+          if (p.countryCode && p.countryCode !== 'US') {
+            hasUSWarehouse = false;
+          }
+
+          if (!hasUSWarehouse) {
+            skipped++;
+            continue;
+          }
+
+          try {
+            await importProduct(p, cat.category, cat.subcategory);
+            imported++;
+          } catch (err) {
+            errors.push({ product: p.productNameEn || p.pid, error: err.message });
+          }
+        }
+
+        if (results.list.length < 20) break;
+        page++;
+      }
+    } catch (err) {
+      errors.push({ category: cat.search, error: err.message });
+    }
+  }
+
+  config.lastSync.products = new Date();
+  await config.save();
+
+  return { imported, skipped, errors, totalSearches: categories.length };
+}
+
+async function getFeaturedProducts(limit) {
+  var products = await InternationalProduct.find({
+    supplierType: 'CJ_USA',
+    isActive: true,
+    inStock: true
+  }).sort({ orderCount: -1 }).limit(limit || 20)
+    .populate('store', 'name country logo');
+
+  return products;
+}
+
+async function getFeaturedByCategory(categorySlug, limit) {
+  var products = await InternationalProduct.find({
+    supplierType: 'CJ_USA',
+    isActive: true,
+    inStock: true,
+    category: categorySlug
+  }).sort({ orderCount: -1 }).limit(limit || 10)
+    .populate('store', 'name country logo');
+
+  return products;
+}
+
 module.exports = {
   testConnection,
   getAccessToken,
@@ -350,5 +500,10 @@ module.exports = {
   createCJOrder,
   syncTracking,
   getOrCreateCJStore,
-  getConfig
+  getConfig,
+  smartImportPhase1,
+  getFeaturedProducts,
+  getFeaturedByCategory,
+  passesImportFilter,
+  IMPORT_RULES
 };
