@@ -4,7 +4,8 @@ const internationalOrderSchema = new mongoose.Schema({
   orderNumber: { type: String, unique: true },
   customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   store: { type: mongoose.Schema.Types.ObjectId, ref: 'InternationalStore', required: true },
-  country: { type: String, required: true, enum: ['DO', 'PA', 'US'] },
+  country: { type: String, required: true, enum: ['DO', 'PA', 'US', 'HT'] },
+  supplierType: { type: String, default: 'MANUAL' },
   items: [{
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'InternationalProduct' },
     name: { type: String, required: true },
@@ -46,6 +47,27 @@ const internationalOrderSchema = new mongoose.Schema({
     phone: { type: String }
   },
   trackingNumber: { type: String },
+  supplierOrderId: { type: String },
+  supplierOrderData: { type: mongoose.Schema.Types.Mixed },
+  logistics: {
+    legs: [{
+      label: { type: String },
+      carrier: { type: String },
+      trackingNumber: { type: String },
+      status: { type: String, enum: ['pending', 'in_transit', 'arrived', 'delivered'], default: 'pending' },
+      origin: { type: String },
+      destination: { type: String },
+      updatedAt: { type: Date }
+    }],
+    currentLeg: { type: Number, default: 0 }
+  },
+  settlement: {
+    supplierCostUSD: { type: Number, default: 0 },
+    shippingCostUSD: { type: Number, default: 0 },
+    exchangeRateUsed: { type: Number, default: 0 },
+    platformProfit: { type: Number, default: 0 },
+    settled: { type: Boolean, default: false }
+  },
   estimatedDelivery: { type: Date },
   adminNotes: { type: String },
   cancelReason: { type: String }

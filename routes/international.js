@@ -6,6 +6,8 @@ const upload = require('../middleware/upload');
 const InternationalStore = require('../models/InternationalStore');
 const InternationalProduct = require('../models/InternationalProduct');
 const InternationalOrder = require('../models/InternationalOrder');
+const Category = require('../models/Category');
+const cj = require('../services/cjDropshipping');
 
 // ─── PUBLIC: Browse Stores by Country ───
 router.get('/stores', async (req, res) => {
@@ -43,6 +45,44 @@ router.get('/stores/:id', async (req, res) => {
     res.json({ success: true, data: { store, products } });
   } catch (err) {
     console.error('International store detail error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── PUBLIC: Browse Products by Category ───
+router.get('/products', async (req, res) => {
+  try {
+    var query = { isActive: true };
+    if (req.query.category) query.category = req.query.category;
+    if (req.query.subcategory) query.subcategory = req.query.subcategory;
+    if (req.query.supplierType) query.supplierType = req.query.supplierType;
+    if (req.query.country) {
+      var stores = await InternationalStore.find({ country: req.query.country.toUpperCase() }).select('_id');
+      query.store = { $in: stores.map(function(s) { return s._id; }) };
+    }
+    if (req.query.search) query.$text = { $search: req.query.search };
+    if (req.query.minPrice) query.finalPriceHTG = { $gte: parseInt(req.query.minPrice) };
+    if (req.query.maxPrice) {
+      query.finalPriceHTG = query.finalPriceHTG || {};
+      query.finalPriceHTG.$lte = parseInt(req.query.maxPrice);
+    }
+
+    var page = parseInt(req.query.page) || 1;
+    var limit = parseInt(req.query.limit) || 40;
+    var skip = (page - 1) * limit;
+    var sort = req.query.sort === 'price_asc' ? { finalPriceHTG: 1 } :
+               req.query.sort === 'price_desc' ? { finalPriceHTG: -1 } :
+               req.query.sort === 'newest' ? { createdAt: -1 } :
+               { orderCount: -1 };
+
+    var products = await InternationalProduct.find(query)
+      .populate('store', 'name country logo supplierType')
+      .sort(sort).skip(skip).limit(limit);
+    var total = await InternationalProduct.countDocuments(query);
+
+    res.json({ success: true, data: products, pagination: { page, limit, total } });
+  } catch (err) {
+    console.error('Browse products error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -111,6 +151,7 @@ router.post('/orders', protect, [
       customer: req.user._id,
       store: store._id,
       country: store.country,
+      supplierType: store.supplierType || 'MANUAL',
       items: orderItems,
       totalHTG: totalHTG,
       paymentMethod: req.body.paymentMethod,
@@ -215,7 +256,7 @@ router.get('/orders/:id', protect, async (req, res) => {
 // ─── ADMIN: Add Store ───
 router.post('/admin/stores', protect, authorize('admin'), [
   body('name').notEmpty().withMessage('Store name required'),
-  body('country').isIn(['DO', 'PA', 'US']).withMessage('Invalid country')
+  body('country').isIn(['DO', 'PA', 'US', 'HT']).withMessage('Invalid country')
 ], async (req, res) => {
   var errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
@@ -408,10 +449,22 @@ router.patch('/admin/orders/:id/verify-payment', protect, authorize('admin'), [
     if (req.body.status === 'approved') {
       order.status = 'payment_verified';
       order.statusHistory.push({ status: 'payment_verified', note: 'Payment approved by admin' });
+      await order.save();
+
+      // Auto-create CJ order if this is a CJ supplier order
+      if (order.supplierType === 'CJ_USA') {
+        try {
+          await cj.createCJOrder(order);
+        } catch (cjErr) {
+          console.error('Auto CJ order creation failed:', cjErr.message);
+          order.adminNotes = (order.adminNotes || '') + ' | CJ auto-order failed: ' + cjErr.message;
+          await order.save();
+        }
+      }
     } else {
       order.statusHistory.push({ status: order.status, note: 'Payment rejected: ' + (req.body.notes || '') });
+      await order.save();
     }
-    await order.save();
 
     if (req.app.get('io')) {
       req.app.get('io').emit('payment_verified', { orderId: order._id, status: req.body.status });

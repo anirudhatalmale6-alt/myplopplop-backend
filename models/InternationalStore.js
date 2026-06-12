@@ -3,7 +3,12 @@ const mongoose = require('mongoose');
 const internationalStoreSchema = new mongoose.Schema({
   name: { type: String, required: [true, 'Store name required'], trim: true },
   slug: { type: String, unique: true, lowercase: true },
-  country: { type: String, required: true, enum: ['DO', 'PA', 'US'] },
+  country: { type: String, required: true, enum: ['DO', 'PA', 'US', 'HT'] },
+  supplierType: {
+    type: String,
+    default: 'MANUAL',
+    enum: ['MANUAL', 'CJ_USA', 'ALIBABA', 'CUSTOM_USA', 'CUSTOM_DR', 'CUSTOM_PA', 'HAITI_MERCHANT']
+  },
   description: { type: String, default: '' },
   logo: { type: String, default: '' },
   coverImage: { type: String, default: '' },
