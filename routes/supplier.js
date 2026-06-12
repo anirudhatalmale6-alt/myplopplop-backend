@@ -5,48 +5,62 @@ const { protect, authorize } = require('../middleware/auth');
 const SupplierConfig = require('../models/SupplierConfig');
 const InternationalProduct = require('../models/InternationalProduct');
 const InternationalOrder = require('../models/InternationalOrder');
-const cj = require('../services/cjDropshipping');
+const registry = require('../services/supplierRegistry');
 
-// ─── ADMIN: List Supplier Configs ───
+function getAdapter(req, res) {
+  var type = req.params.type;
+  if (!type) {
+    res.status(400).json({ success: false, message: 'Supplier type required' });
+    return null;
+  }
+  return registry.get(type.toUpperCase());
+}
+
+// ─── List registered supplier types ───
+router.get('/types', protect, authorize('admin'), (req, res) => {
+  res.json({ success: true, data: registry.list() });
+});
+
+// ─── List all supplier configs ───
 router.get('/configs', protect, authorize('admin'), async (req, res) => {
   try {
     var configs = await SupplierConfig.find();
-    res.json({ success: true, data: configs });
+    var safe = configs.map(function(c) {
+      var obj = c.toObject();
+      if (obj.credentials.apiSecret) obj.credentials.apiSecret = '***';
+      return obj;
+    });
+    res.json({ success: true, data: safe });
   } catch (err) {
     console.error('Supplier configs error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// ─── ADMIN: Get/Create CJ Config ───
-router.get('/cj/config', protect, authorize('admin'), async (req, res) => {
+// ─── Get config for a supplier type ───
+router.get('/:type/config', protect, authorize('admin'), async (req, res) => {
   try {
-    var config = await SupplierConfig.findOne({ supplierType: 'CJ_USA' });
+    var type = req.params.type.toUpperCase();
+    var config = await SupplierConfig.findOne({ supplierType: type });
     if (!config) {
-      config = await SupplierConfig.create({
-        supplierType: 'CJ_USA',
-        name: 'CJ Dropshipping USA',
-        isActive: false
-      });
+      config = await SupplierConfig.create({ supplierType: type, name: type });
     }
     var safe = config.toObject();
     if (safe.credentials.apiSecret) safe.credentials.apiSecret = '***';
     res.json({ success: true, data: safe });
   } catch (err) {
-    console.error('CJ config error:', err);
+    console.error('Supplier config error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// ─── ADMIN: Update CJ Credentials ───
-router.put('/cj/config', protect, authorize('admin'), [
-  body('credentials').optional().isObject(),
-  body('settings').optional().isObject()
-], async (req, res) => {
+// ─── Update config for a supplier type ───
+router.put('/:type/config', protect, authorize('admin'), async (req, res) => {
   try {
-    var config = await SupplierConfig.findOne({ supplierType: 'CJ_USA' });
+    var type = req.params.type.toUpperCase();
+    var config = await SupplierConfig.findOne({ supplierType: type });
     if (!config) {
-      config = await SupplierConfig.create({ supplierType: 'CJ_USA', name: 'CJ Dropshipping USA' });
+      config = await SupplierConfig.create({ supplierType: type, name: req.body.name || type });
     }
 
     if (req.body.credentials) {
@@ -61,120 +75,139 @@ router.put('/cj/config', protect, authorize('admin'), [
         config.settings[key] = req.body.settings[key];
       });
     }
+    if (req.body.name) config.name = req.body.name;
     if (req.body.isActive !== undefined) config.isActive = req.body.isActive;
 
     await config.save();
-    await cj.getOrCreateCJStore();
+
+    var adapter = registry.get(type);
+    if (adapter.ensureStore) {
+      await adapter.ensureStore(config.name, req.body.country || 'US');
+    }
 
     res.json({ success: true, data: config });
   } catch (err) {
-    console.error('Update CJ config error:', err);
+    console.error('Update supplier config error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// ─── ADMIN: Test CJ Connection ───
-router.post('/cj/test', protect, authorize('admin'), async (req, res) => {
+// ─── Test connection ───
+router.post('/:type/test', protect, authorize('admin'), async (req, res) => {
   try {
-    var result = await cj.testConnection();
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var result = await adapter.testConnection();
     res.json({ success: true, data: result });
   } catch (err) {
     res.json({ success: false, message: err.message });
   }
 });
 
-// ─── ADMIN: Get CJ Auth Token ───
-router.post('/cj/authenticate', protect, authorize('admin'), [
-  body('email').isEmail(),
-  body('password').notEmpty()
-], async (req, res) => {
-  var errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
-
+// ─── Authenticate (for API-based suppliers) ───
+router.post('/:type/authenticate', protect, authorize('admin'), async (req, res) => {
   try {
-    var tokens = await cj.getAccessToken(req.body.email, req.body.password);
-    var config = await SupplierConfig.findOne({ supplierType: 'CJ_USA' });
-    if (!config) {
-      config = await SupplierConfig.create({ supplierType: 'CJ_USA', name: 'CJ Dropshipping USA' });
-    }
-    config.credentials.accessToken = tokens.accessToken;
-    config.credentials.refreshToken = tokens.refreshToken;
-    config.credentials.tokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    config.isActive = true;
-    await config.save();
-    await cj.getOrCreateCJStore();
-
-    res.json({ success: true, message: 'Authenticated with CJ Dropshipping' });
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var result = await adapter.authenticate(req.body);
+    res.json({ success: true, data: result });
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
   }
 });
 
-// ─── ADMIN: Browse CJ Products ───
-router.get('/cj/products', protect, authorize('admin'), async (req, res) => {
+// ─── Browse supplier catalog ───
+router.get('/:type/products', protect, authorize('admin'), async (req, res) => {
   try {
-    var data = await cj.fetchProducts({
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var data = await adapter.fetchProducts({
       page: req.query.page || 1,
       limit: req.query.limit || 20,
       categoryId: req.query.categoryId,
-      productName: req.query.search
+      search: req.query.search
     });
     res.json({ success: true, data: data });
   } catch (err) {
-    console.error('Browse CJ products error:', err);
+    console.error('Browse products error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ─── ADMIN: Import CJ Product ───
-router.post('/cj/products/import', protect, authorize('admin'), [
-  body('pid').notEmpty().withMessage('CJ Product ID required')
+// ─── Import single product ───
+router.post('/:type/products/import', protect, authorize('admin'), [
+  body('externalId').notEmpty().withMessage('External product ID required')
 ], async (req, res) => {
   var errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
 
   try {
-    var detail = await cj.getProductDetail(req.body.pid);
-    var product = await cj.importProduct(detail, req.body.category, req.body.subcategory);
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var detail = await adapter.getProductDetail(req.body.externalId);
+    var product = await adapter.importProduct(detail, req.body.category, req.body.subcategory);
     res.json({ success: true, data: product });
   } catch (err) {
-    console.error('Import CJ product error:', err);
+    console.error('Import product error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ─── ADMIN: Bulk Import CJ Products ───
-router.post('/cj/products/bulk-import', protect, authorize('admin'), [
-  body('pids').isArray({ min: 1 }).withMessage('Product IDs array required')
+// ─── Bulk import ───
+router.post('/:type/products/bulk-import', protect, authorize('admin'), [
+  body('externalIds').isArray({ min: 1 }).withMessage('External IDs array required')
 ], async (req, res) => {
   var errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
 
   try {
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
     var imported = 0;
     var errs = [];
 
-    for (var i = 0; i < req.body.pids.length; i++) {
+    for (var i = 0; i < req.body.externalIds.length; i++) {
       try {
-        var detail = await cj.getProductDetail(req.body.pids[i]);
-        await cj.importProduct(detail, req.body.category, req.body.subcategory);
+        var detail = await adapter.getProductDetail(req.body.externalIds[i]);
+        await adapter.importProduct(detail, req.body.category, req.body.subcategory);
         imported++;
       } catch (e) {
-        errs.push({ pid: req.body.pids[i], error: e.message });
+        errs.push({ externalId: req.body.externalIds[i], error: e.message });
       }
     }
 
-    res.json({ success: true, data: { imported, total: req.body.pids.length, errors: errs } });
+    res.json({ success: true, data: { imported, total: req.body.externalIds.length, errors: errs } });
   } catch (err) {
     console.error('Bulk import error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ─── ADMIN: Sync Inventory ───
-router.post('/cj/sync/inventory', protect, authorize('admin'), async (req, res) => {
+// ─── Manual product add (for non-API suppliers) ───
+router.post('/:type/products/add', protect, authorize('admin'), [
+  body('name').notEmpty().withMessage('Product name required'),
+  body('sourcePrice').isNumeric().withMessage('Source price required')
+], async (req, res) => {
+  var errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+
   try {
-    var result = await cj.syncInventory();
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var product = await adapter.importProduct(req.body, req.body.category, req.body.subcategory);
+    res.json({ success: true, data: product });
+  } catch (err) {
+    console.error('Add product error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── Sync inventory ───
+router.post('/:type/sync/inventory', protect, authorize('admin'), async (req, res) => {
+  try {
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var result = await adapter.syncInventory();
     res.json({ success: true, data: result });
   } catch (err) {
     console.error('Sync inventory error:', err);
@@ -182,10 +215,12 @@ router.post('/cj/sync/inventory', protect, authorize('admin'), async (req, res) 
   }
 });
 
-// ─── ADMIN: Sync Tracking ───
-router.post('/cj/sync/tracking', protect, authorize('admin'), async (req, res) => {
+// ─── Sync tracking ───
+router.post('/:type/sync/tracking', protect, authorize('admin'), async (req, res) => {
   try {
-    var result = await cj.syncTracking();
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var result = await adapter.syncTracking();
     res.json({ success: true, data: result });
   } catch (err) {
     console.error('Sync tracking error:', err);
@@ -193,73 +228,23 @@ router.post('/cj/sync/tracking', protect, authorize('admin'), async (req, res) =
   }
 });
 
-// ─── ADMIN: CJ Dashboard Stats ───
-router.get('/cj/stats', protect, authorize('admin'), async (req, res) => {
+// ─── Smart import (for suppliers that support it) ───
+router.post('/:type/smart-import', protect, authorize('admin'), async (req, res) => {
   try {
-    var config = await SupplierConfig.findOne({ supplierType: 'CJ_USA' });
-    var totalProducts = await InternationalProduct.countDocuments({ supplierType: 'CJ_USA', isActive: true });
-    var totalOrders = await InternationalOrder.countDocuments({ supplierType: 'CJ_USA' });
-    var lowStock = await InternationalProduct.countDocuments({ supplierType: 'CJ_USA', isActive: true, inventory: { $gt: 0, $lt: 10 } });
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    if (!adapter.smartImport) {
+      return res.status(400).json({ success: false, message: 'Smart import not supported for ' + req.params.type });
+    }
 
-    var revenueAgg = await InternationalOrder.aggregate([
-      { $match: { supplierType: 'CJ_USA', status: { $nin: ['cancelled', 'refunded'] } } },
-      { $group: { _id: null, revenue: { $sum: '$totalHTG' }, cost: { $sum: '$settlement.supplierCostUSD' }, profit: { $sum: '$settlement.platformProfit' } } }
-    ]);
+    res.json({ success: true, message: 'Smart import started in background' });
 
-    var topProducts = await InternationalProduct.find({ supplierType: 'CJ_USA', isActive: true })
-      .sort({ orderCount: -1 }).limit(10).select('name images orderCount finalPriceHTG sourcePrice');
-
-    res.json({
-      success: true,
-      data: {
-        totalProducts,
-        totalOrders,
-        lowStockAlerts: lowStock,
-        revenue: revenueAgg.length > 0 ? revenueAgg[0] : { revenue: 0, cost: 0, profit: 0 },
-        topProducts,
-        lastSync: config ? config.lastSync : {},
-        settings: config ? config.settings : {}
-      }
-    });
-  } catch (err) {
-    console.error('CJ stats error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ─── ADMIN: CJ Orders List ───
-router.get('/cj/orders', protect, authorize('admin'), async (req, res) => {
-  try {
-    var page = parseInt(req.query.page) || 1;
-    var limit = parseInt(req.query.limit) || 50;
-    var skip = (page - 1) * limit;
-
-    var query = { supplierType: 'CJ_USA' };
-    if (req.query.status) query.status = req.query.status;
-
-    var orders = await InternationalOrder.find(query)
-      .populate('customer', 'firstName lastName phone')
-      .sort({ createdAt: -1 }).skip(skip).limit(limit);
-    var total = await InternationalOrder.countDocuments(query);
-
-    res.json({ success: true, data: orders, pagination: { page, limit, total } });
-  } catch (err) {
-    console.error('CJ orders error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ─── ADMIN: Smart Import Phase 1 ───
-router.post('/cj/smart-import', protect, authorize('admin'), async (req, res) => {
-  try {
-    res.json({ success: true, message: 'Smart import started. This runs in the background.' });
-
-    cj.smartImportPhase1(function(progress) {
-      console.log('CJ Import: ' + progress.step + '/' + progress.total + ' - "' + progress.search + '" (' + progress.imported + ' imported)');
+    adapter.smartImport(function(progress) {
+      console.log(req.params.type + ' Import: ' + progress.step + '/' + progress.total + ' - "' + progress.search + '" (' + progress.imported + ' imported)');
     }).then(function(result) {
-      console.log('CJ Smart Import complete:', JSON.stringify(result));
+      console.log(req.params.type + ' Smart Import complete:', JSON.stringify(result));
     }).catch(function(err) {
-      console.error('CJ Smart Import error:', err);
+      console.error(req.params.type + ' Smart Import error:', err);
     });
   } catch (err) {
     console.error('Smart import error:', err);
@@ -267,16 +252,47 @@ router.post('/cj/smart-import', protect, authorize('admin'), async (req, res) =>
   }
 });
 
-// ─── ADMIN: Get Import Rules ───
-router.get('/cj/import-rules', protect, authorize('admin'), async (req, res) => {
-  res.json({ success: true, data: cj.IMPORT_RULES });
+// ─── Get import rules ───
+router.get('/:type/import-rules', protect, authorize('admin'), (req, res) => {
+  var adapter = getAdapter(req, res);
+  if (!adapter) return;
+  var rules = adapter.getImportRules();
+  res.json({ success: true, data: rules });
 });
 
-// ─── PUBLIC: Featured CJ USA Products ───
-router.get('/cj/featured', async (req, res) => {
+// ─── Dashboard stats ───
+router.get('/:type/stats', protect, authorize('admin'), async (req, res) => {
   try {
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var stats = await adapter.getStats();
+    res.json({ success: true, data: stats });
+  } catch (err) {
+    console.error('Supplier stats error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── Orders for a supplier ───
+router.get('/:type/orders', protect, authorize('admin'), async (req, res) => {
+  try {
+    var adapter = getAdapter(req, res);
+    if (!adapter) return;
+    var statusQuery = req.query.status ? { status: req.query.status } : {};
+    var result = await adapter.getOrders(statusQuery, parseInt(req.query.page), parseInt(req.query.limit));
+    res.json({ success: true, data: result.orders, pagination: result.pagination });
+  } catch (err) {
+    console.error('Supplier orders error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── PUBLIC: Featured products for a supplier ───
+router.get('/:type/featured', async (req, res) => {
+  try {
+    var adapter = registry.get(req.params.type.toUpperCase());
     var limit = parseInt(req.query.limit) || 20;
-    var products = await cj.getFeaturedProducts(limit);
+    var products = await adapter.getFeaturedProducts(limit);
     res.json({ success: true, data: products });
   } catch (err) {
     console.error('Featured products error:', err);
@@ -284,11 +300,12 @@ router.get('/cj/featured', async (req, res) => {
   }
 });
 
-// ─── PUBLIC: Featured CJ Products by Category ───
-router.get('/cj/featured/:category', async (req, res) => {
+// ─── PUBLIC: Featured by category ───
+router.get('/:type/featured/:category', async (req, res) => {
   try {
+    var adapter = registry.get(req.params.type.toUpperCase());
     var limit = parseInt(req.query.limit) || 10;
-    var products = await cj.getFeaturedByCategory(req.params.category, limit);
+    var products = await adapter.getFeaturedByCategory(req.params.category, limit);
     res.json({ success: true, data: products });
   } catch (err) {
     console.error('Featured by category error:', err);

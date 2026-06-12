@@ -7,7 +7,7 @@ const InternationalStore = require('../models/InternationalStore');
 const InternationalProduct = require('../models/InternationalProduct');
 const InternationalOrder = require('../models/InternationalOrder');
 const Category = require('../models/Category');
-const cj = require('../services/cjDropshipping');
+const registry = require('../services/supplierRegistry');
 
 // ─── PUBLIC: Browse Stores by Country ───
 router.get('/stores', async (req, res) => {
@@ -451,13 +451,14 @@ router.patch('/admin/orders/:id/verify-payment', protect, authorize('admin'), [
       order.statusHistory.push({ status: 'payment_verified', note: 'Payment approved by admin' });
       await order.save();
 
-      // Auto-create CJ order if this is a CJ supplier order
-      if (order.supplierType === 'CJ_USA') {
+      // Auto-create supplier order if adapter supports it
+      if (order.supplierType && order.supplierType !== 'MANUAL') {
         try {
-          await cj.createCJOrder(order);
-        } catch (cjErr) {
-          console.error('Auto CJ order creation failed:', cjErr.message);
-          order.adminNotes = (order.adminNotes || '') + ' | CJ auto-order failed: ' + cjErr.message;
+          var adapter = registry.get(order.supplierType);
+          await adapter.createSupplierOrder(order);
+        } catch (supErr) {
+          console.error('Auto supplier order failed:', supErr.message);
+          order.adminNotes = (order.adminNotes || '') + ' | Auto-order failed: ' + supErr.message;
           await order.save();
         }
       }
