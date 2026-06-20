@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { protect } = require('../middleware/auth');
+const { notifySignup } = require('../utils/notify');
 
 const router = express.Router();
 
@@ -51,6 +52,10 @@ router.post('/register', [
       referredBy,
       referredAt: referredBy ? new Date() : undefined
     });
+
+    notifySignup(role === 'merchant' ? 'merchant' : 'user', {
+      name, phone, email, role: role || 'customer'
+    }).catch(() => {});
 
     const token = user.getSignedJwtToken();
 

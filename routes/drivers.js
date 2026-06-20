@@ -3,6 +3,7 @@ const DriverProfile = require('../models/DriverProfile');
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const upload = require('../middleware/upload');
+const { notifySignup } = require('../utils/notify');
 
 const router = express.Router();
 
@@ -47,6 +48,11 @@ router.post('/onboard', protect, upload.fields([
 
     // Update user role to driver
     await User.findByIdAndUpdate(req.user._id, { role: 'driver' });
+
+    notifySignup('driver', {
+      name: req.user.name, phone: req.user.phone,
+      vehicleType, plate: vehiclePlate
+    }).catch(() => {});
 
     res.status(201).json({ success: true, profile });
   } catch (error) {
