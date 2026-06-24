@@ -12,7 +12,8 @@ const registry = require('../services/supplierRegistry');
 // ─── PUBLIC: Browse Stores by Country ───
 router.get('/stores', async (req, res) => {
   try {
-    var query = { isActive: true };
+    var query = {};
+    if (req.query.active !== 'all') query.isActive = true;
     if (req.query.country) query.country = req.query.country.toUpperCase();
     if (req.query.category) query.category = req.query.category;
 
