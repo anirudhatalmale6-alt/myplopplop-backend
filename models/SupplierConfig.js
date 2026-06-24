@@ -5,7 +5,7 @@ const supplierConfigSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
-    enum: ['CJ_USA', 'WALMART_USA', 'ALIBABA', 'CUSTOM_USA', 'CUSTOM_DR', 'CUSTOM_PA', 'HAITI_MERCHANT']
+    enum: ['CJ_USA', 'WALMART_USA', 'SHEIN_USA', 'ALIBABA', 'CUSTOM_USA', 'CUSTOM_DR', 'CUSTOM_PA', 'HAITI_MERCHANT']
   },
   name: { type: String, required: true },
   isActive: { type: Boolean, default: false },
