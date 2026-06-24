@@ -2,7 +2,7 @@ var BaseAdapter = require('../supplierAdapter');
 var InternationalOrder = require('../../models/InternationalOrder');
 var InternationalProduct = require('../../models/InternationalProduct');
 
-var RAPIDAPI_HOST = 'shein-scraper-api.p.rapidapi.com';
+var RAPIDAPI_HOST = 'shein-scraper.p.rapidapi.com';
 var RAPIDAPI_BASE = 'https://' + RAPIDAPI_HOST;
 
 function SheinAdapter() {
@@ -87,7 +87,7 @@ SheinAdapter.prototype.authenticate = async function(credentials) {
 
 SheinAdapter.prototype.testConnection = async function() {
   try {
-    await this._fetch('/shein/product/details?goods_id=16477544&currency=usd&country=us&language=en', {});
+    await this._fetch('/products/details?goodsId=62293020', {});
     return { success: true, message: 'Connected to SHEIN API' };
   } catch (err) {
     return { success: false, message: err.message };
@@ -95,8 +95,8 @@ SheinAdapter.prototype.testConnection = async function() {
 };
 
 SheinAdapter.prototype.fetchProducts = async function(params) {
-  var query = '/shein/product/search?language=en&country=us&currency=usd';
-  query += '&q=' + encodeURIComponent(params.search || params.productName || 'fashion');
+  var query = '/products/search?keywords=' + encodeURIComponent(params.search || params.productName || 'fashion');
+  query += '&language=en&country=US&currency=USD';
   query += '&limit=' + (params.limit || 20);
   query += '&page=' + (params.page || 1);
 
@@ -126,7 +126,7 @@ SheinAdapter.prototype.fetchProducts = async function(params) {
 };
 
 SheinAdapter.prototype.getProductDetail = async function(externalId) {
-  var data = await this._fetch('/shein/product/details?goods_id=' + externalId + '&language=en&country=us&currency=usd', {});
+  var data = await this._fetch('/products/details?goodsId=' + externalId, {});
   return data.data || data.info || data;
 };
 
