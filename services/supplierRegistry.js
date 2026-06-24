@@ -1,4 +1,5 @@
 var CJAdapter = require('./adapters/cj');
+var WalmartAdapter = require('./adapters/walmart');
 var ManualAdapter = require('./adapters/manual');
 
 var adapters = {};
@@ -24,6 +25,7 @@ function list() {
 
 // Register built-in adapters
 register('CJ_USA', CJAdapter);
+register('WALMART_USA', WalmartAdapter);
 register('MANUAL', ManualAdapter);
 register('HAITI_MERCHANT', function() { ManualAdapter.call(this, 'HAITI_MERCHANT'); });
 register('CUSTOM_DR', function() { ManualAdapter.call(this, 'CUSTOM_DR'); });
