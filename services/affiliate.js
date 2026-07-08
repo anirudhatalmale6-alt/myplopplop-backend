@@ -141,7 +141,8 @@ var DEMO_CATALOG = [
 // image url per demo item (Unsplash source keyword thumbnails; frontend has SVG fallback)
 function demoImage(item) {
   var kw = (item.keywords || 'product').split(' ')[0];
-  return 'https://source.unsplash.com/400x400/?' + encodeURIComponent(kw);
+  var lock = (item.externalId || '1').replace(/\D/g, '').slice(-4) || '1';
+  return 'https://loremflickr.com/400/400/' + encodeURIComponent(kw) + '?lock=' + lock;
 }
 
 // ---------------------------------------------------------------------------
