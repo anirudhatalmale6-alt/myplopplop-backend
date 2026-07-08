@@ -35,6 +35,7 @@ const logisticsRoutes = require('./routes/logistics');
 const biznisiqRoutes = require('./routes/biznisiq');
 const categoryRoutes = require('./routes/categories');
 const supplierRoutes = require('./routes/supplier');
+const marketplaceRoutes = require('./routes/marketplace');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -93,6 +94,7 @@ app.use('/api/logistics', logisticsRoutes);
 app.use('/api/biznisiq', biznisiqRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/supplier', supplierRoutes);
+app.use('/api/marketplace', marketplaceRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
