@@ -7,9 +7,10 @@ const Order = require('../models/Order');
 const Store = require('../models/Store');
 const Transaction = require('../models/Transaction');
 
-let Koutye, KoutyeReferral;
+let Koutye, KoutyeReferral, ParenajSignup;
 try { Koutye = require('../models/Koutye'); } catch(e) { Koutye = null; }
 try { KoutyeReferral = require('../models/KoutyeReferral'); } catch(e) { KoutyeReferral = null; }
+try { ParenajSignup = require('../models/ParenajSignup'); } catch(e) { ParenajSignup = null; }
 
 const ADMIN_PIN = process.env.ADMIN_PIN || 'hb2026admin';
 
@@ -64,6 +65,9 @@ router.get('/dashboard', async (req, res) => {
 
     const results = await Promise.all(queries);
 
+    // Public Parenaj Biznis sign-ups (lead-capture) count toward the card too.
+    const parenajCount = ParenajSignup ? await ParenajSignup.countDocuments() : 0;
+
     const commissionRev = results[17][0] || { total: 0 };
     const orderRev = results[18][0] || { total: 0, commission: 0 };
 
@@ -88,7 +92,7 @@ router.get('/dashboard', async (req, res) => {
       commissionRevenue: commissionRev.total,
       orderRevenue: orderRev.total,
       orderCommission: orderRev.commission,
-      totalKoutye: Koutye ? results[19] : 0,
+      totalKoutye: (Koutye ? results[19] : 0) + parenajCount,
       activeKoutye: Koutye ? results[20] : 0,
       totalReferrals: KoutyeReferral ? results[21] : 0
     };
@@ -232,20 +236,52 @@ router.get('/stores', async (req, res) => {
 
 router.get('/koutye', async (req, res) => {
   try {
-    if (!Koutye) return res.json({ success: true, koutye: [], total: 0, page: 1, pages: 0 });
     const { status, search, page = 1 } = req.query;
     const limit = 20;
-    const filter = {};
-    if (status) filter.status = status;
-    if (search) {
-      filter.$or = [
-        { koutyeCode: { $regex: search, $options: 'i' } },
-        { whatsapp: { $regex: search, $options: 'i' } }
-      ];
+
+    // Full Koutye ambassadors (if any)
+    let koutyeRows = [];
+    if (Koutye) {
+      const filter = {};
+      if (status) filter.status = status;
+      if (search) {
+        filter.$or = [
+          { koutyeCode: { $regex: search, $options: 'i' } },
+          { whatsapp: { $regex: search, $options: 'i' } }
+        ];
+      }
+      koutyeRows = await Koutye.find(filter).populate('user', 'name phone').sort({ createdAt: -1 }).lean();
     }
-    const total = await Koutye.countDocuments(filter);
-    const koutye = await Koutye.find(filter).populate('user', 'name phone').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean();
-    res.json({ success: true, koutye, page: +page, pages: Math.ceil(total / limit), total });
+
+    // Public Parenaj Biznis sign-ups (lead-capture) shaped to match the table.
+    let parenajRows = [];
+    if (ParenajSignup) {
+      const pfilter = {};
+      if (status) pfilter.status = status;
+      if (search) {
+        pfilter.$or = [
+          { koutyeCode: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+          { name: { $regex: search, $options: 'i' } }
+        ];
+      }
+      const signups = await ParenajSignup.find(pfilter).sort({ createdAt: -1 }).lean();
+      parenajRows = signups.map(s => ({
+        createdAt: s.createdAt,
+        user: { name: s.name, phone: s.phone },
+        koutyeCode: s.koutyeCode,
+        whatsapp: s.phone,
+        tier: 'nouvo',
+        stats: { totalReferrals: 0, totalEarnings: 0 },
+        status: s.status,
+        isSignup: true
+      }));
+    }
+
+    const all = koutyeRows.concat(parenajRows).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const total = all.length;
+    const koutye = all.slice((page - 1) * limit, page * limit);
+    res.json({ success: true, koutye, page: +page, pages: Math.ceil(total / limit) || 1, total });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

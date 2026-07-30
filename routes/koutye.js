@@ -6,6 +6,7 @@ const KoutyeReferral = require('../models/KoutyeReferral');
 const KoutyeCommission = require('../models/KoutyeCommission');
 const KoutyePayout = require('../models/KoutyePayout');
 const KoutyeWallet = require('../models/KoutyeWallet');
+const ParenajSignup = require('../models/ParenajSignup');
 const User = require('../models/User');
 
 const COMMISSION_WINDOW_DAYS = 365;
@@ -1012,6 +1013,56 @@ router.get('/admin/payouts', protect, authorize('admin'), async (req, res) => {
     });
   } catch (err) {
     console.error('Admin payouts error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// POST /api/koutye/register-public - Capture a public Parenaj Biznis sign-up
+// (name + phone, no login). Used by the marketing form (koutye.html). Records
+// the lead server-side so it shows on the admin dashboard. Idempotent by phone.
+router.post('/register-public', async (req, res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    const phone = (req.body.phone || '').trim();
+    const referredBy = (req.body.referredBy || req.body.ref || '').trim();
+    let customCode = (req.body.customCode || '').trim();
+
+    if (!name || !phone) {
+      return res.status(400).json({ success: false, message: 'Non ak telefòn obligatwa' });
+    }
+
+    // Already signed up? Return their existing code (matches the front-end's
+    // "already registered" behaviour so the referral link stays stable).
+    const existing = await ParenajSignup.findOne({ phone });
+    if (existing) {
+      return res.json({
+        success: true,
+        alreadyRegistered: true,
+        koutyeCode: existing.koutyeCode,
+        referralLink: 'https://haitibiznis.com/koutye.html?ref=' + existing.koutyeCode
+      });
+    }
+
+    // Build a unique code (honour a custom code if it isn't taken).
+    let koutyeCode = customCode ? customCode.replace(/\s+/g, '-').toUpperCase() : generateKoutyeCode(name);
+    let attempts = 0;
+    while (attempts < 10) {
+      const clash = await ParenajSignup.findOne({ koutyeCode });
+      const clashKoutye = Koutye ? await Koutye.findOne({ koutyeCode }) : null;
+      if (!clash && !clashKoutye) break;
+      koutyeCode = generateKoutyeCode(name);
+      attempts++;
+    }
+
+    const signup = await ParenajSignup.create({ name, phone, koutyeCode, referredBy });
+
+    res.status(201).json({
+      success: true,
+      koutyeCode: signup.koutyeCode,
+      referralLink: 'https://haitibiznis.com/koutye.html?ref=' + signup.koutyeCode
+    });
+  } catch (err) {
+    console.error('Parenaj public register error:', err.message);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
