@@ -10,6 +10,43 @@ const { sendPushToUser } = require('./notifications');
 
 const router = express.Router();
 
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// POST /api/rides/quote - Instant distance-based delivery/ride price (no ride created).
+// Body: { pickup:{lat,lng}, dropoff:{lat,lng}, type:'delivery'|'ride' }
+// Used by checkout to show the delivery price before the customer pays.
+router.post('/quote', async (req, res) => {
+  try {
+    const p = req.body.pickup || {};
+    const d = req.body.dropoff || {};
+    const type = req.body.type === 'ride' ? 'ride' : 'delivery';
+    if (p.lat == null || p.lng == null || d.lat == null || d.lng == null) {
+      return res.status(400).json({ success: false, message: 'pickup and dropoff {lat,lng} are required' });
+    }
+    const distanceKm = haversineKm(Number(p.lat), Number(p.lng), Number(d.lat), Number(d.lng));
+    const fare = calculateFare(type, distanceKm);
+    res.json({
+      success: true,
+      data: {
+        distanceKm: Math.round(distanceKm * 10) / 10,
+        deliveryFee: fare.totalFare,
+        driverEarning: fare.driverEarning,
+        commission: fare.commission,
+        breakdown: fare.breakdown
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // POST /api/rides - Create a new ride/delivery request
 router.post('/', protect, [
   body('type').isIn(['delivery', 'ride']),
@@ -84,11 +121,31 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
     if (ride.status !== 'requested') {
       return res.status(400).json({ success: false, message: 'Ride already taken' });
     }
+    // For auto-dispatched deliveries, only the driver currently being offered the
+    // job may accept, and only before the 30s window closes.
+    if (ride.offeredTo) {
+      if (String(ride.offeredTo) !== String(req.user._id)) {
+        return res.status(403).json({ success: false, message: 'This delivery is offered to another driver' });
+      }
+      if (ride.offerExpiresAt && ride.offerExpiresAt < new Date()) {
+        return res.status(400).json({ success: false, message: 'Offer expired' });
+      }
+    }
 
     ride.driver = req.user._id;
     ride.status = 'accepted';
     ride.acceptedAt = new Date();
+    ride.offeredTo = null;
+    ride.offerExpiresAt = null;
     await ride.save();
+
+    // Link the driver back onto the marketplace order so tracking + payout work.
+    if (ride.order) {
+      try {
+        const Order = require('../models/Order');
+        await Order.updateOne({ _id: ride.order }, { $set: { rider: req.user._id } });
+      } catch (e) { /* non-fatal */ }
+    }
 
     const populated = await Ride.findById(ride._id)
       .populate('customer', 'name phone')
@@ -106,6 +163,25 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
     }).catch(() => {});
 
     res.json({ success: true, ride: populated });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// PUT /api/rides/:id/decline - Driver declines an offer → auto re-offer to next closest
+router.put('/:id/decline', protect, authorize('driver'), async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id);
+    if (!ride) return res.status(404).json({ success: false, message: 'Ride not found' });
+    if (ride.status !== 'requested') {
+      return res.status(400).json({ success: false, message: 'Ride no longer open' });
+    }
+    if (ride.offeredTo && String(ride.offeredTo) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Not your offer' });
+    }
+    const deliveryDispatch = require('../services/deliveryDispatch');
+    await deliveryDispatch.declineOffer(ride, req.user._id, req.app.get('io'));
+    res.json({ success: true, message: 'Passed to the next driver' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

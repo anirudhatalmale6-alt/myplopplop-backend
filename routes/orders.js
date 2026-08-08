@@ -339,6 +339,19 @@ router.put('/:id/status', protect, [
       });
     }
 
+    // AUTOMATIC DISPATCH: the moment the store marks a delivery order "ready",
+    // create a delivery ride and offer it to the nearest driver — no button, no staff.
+    if (req.body.status === 'ready' && order.deliveryType === 'delivery' && !order.rideId) {
+      try {
+        var deliveryDispatch = require('../services/deliveryDispatch');
+        deliveryDispatch.createDeliveryRideForOrder(order, store, io).catch(function (e) {
+          console.error('Auto-dispatch error:', e.message);
+        });
+      } catch (dispErr) {
+        console.error('Auto-dispatch load error:', dispErr.message);
+      }
+    }
+
     res.json({ success: true, data: order });
   } catch (err) {
     console.error('Update order status error:', err);

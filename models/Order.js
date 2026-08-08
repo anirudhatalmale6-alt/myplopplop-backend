@@ -117,7 +117,10 @@ const orderSchema = new mongoose.Schema({
 
   // MsouWout dispatch integration
   msouwoutRideId: String,
-  msouwoutTrackingCode: String
+  msouwoutTrackingCode: String,
+  // MyPlopPlop delivery engine
+  rideId: { type: mongoose.Schema.Types.ObjectId, ref: 'Ride' },
+  deliveryPin: String
 }, {
   timestamps: true
 });

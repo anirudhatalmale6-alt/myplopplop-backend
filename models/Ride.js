@@ -15,6 +15,20 @@ const rideSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  // Link back to the marketplace order + store this delivery belongs to
+  order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+  store: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
+
+  // Automatic dispatch engine state
+  offeredTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // current driver being offered the job
+  offerExpiresAt: Date,                                              // 30s window for the current offer
+  attemptedDrivers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // drivers already offered/declined
+  dispatchAttempts: { type: Number, default: 0 },
+  noDriverFound: { type: Boolean, default: false }, // true once we exhaust nearby drivers
+
+  // Secure pickup / delivery verification code (customer gives to driver)
+  pin: String,
+
   // For diaspora orders - the person receiving in Haiti
   recipient: {
     name: String,
@@ -109,5 +123,7 @@ const rideSchema = new mongoose.Schema({
 rideSchema.index({ customer: 1, createdAt: -1 });
 rideSchema.index({ driver: 1, createdAt: -1 });
 rideSchema.index({ status: 1 });
+// Dispatch engine scans for offers that have timed out
+rideSchema.index({ type: 1, status: 1, offerExpiresAt: 1 });
 
 module.exports = mongoose.model('Ride', rideSchema);

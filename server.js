@@ -191,6 +191,18 @@ connectDB().then(() => {
     console.log(`MyPlopPlop API running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   });
+
+  // Automatic delivery dispatch ticker: re-offer timed-out delivery offers to the
+  // next closest driver every 10s (30s accept window). No human dispatching.
+  try {
+    const deliveryDispatch = require('./services/deliveryDispatch');
+    setInterval(() => {
+      deliveryDispatch.dispatchTick(io).catch((e) => console.error('dispatchTick error:', e.message));
+    }, 10000);
+    console.log('Delivery dispatch engine started (10s tick)');
+  } catch (e) {
+    console.error('Failed to start dispatch engine:', e.message);
+  }
 }).catch((err) => {
   console.error('Failed to start:', err);
 });
