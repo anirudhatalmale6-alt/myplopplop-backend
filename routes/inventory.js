@@ -66,7 +66,13 @@ router.post('/:storeId/upload', protect, upload.single('file'), async (req, res)
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
 
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    // CSV: decode as UTF-8 so accented Kreyòl/French text (è, ò, é…) imports
+    // correctly. Reading a CSV as a raw buffer lets XLSX guess the codepage and
+    // mangle accents into mojibake. XLSX binary formats stay as a buffer.
+    const isCsv = /\.csv$/i.test(req.file.originalname) || req.file.mimetype === 'text/csv';
+    const workbook = isCsv
+      ? XLSX.read(req.file.buffer.toString('utf8').replace(/^﻿/, ''), { type: 'string' })
+      : XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
