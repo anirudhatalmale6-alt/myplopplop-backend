@@ -49,18 +49,22 @@ router.post('/:orderId/request-driver', protect, async function(req, res) {
     var dropoffLat = deliveryAddr.coordinates ? deliveryAddr.coordinates.coordinates[1] : 18.54;
     var dropoffLng = deliveryAddr.coordinates ? deliveryAddr.coordinates.coordinates[0] : -72.34;
 
+    var recipientName = (order.recipient && order.recipient.name) || (order.customer && order.customer.name) || 'Kliyan MyPlopPlop';
+    var recipientPhone = (order.recipient && order.recipient.phone) || (order.customer && order.customer.phone) || order.store.phone || '50900000000';
+
+    // MsouWout /api/rides/request expects pickup/dropoff as {lat,lng} objects.
+    // Pickup = the store, dropoff = the customer's delivery address.
     var rideData = {
-      pickup_lat: pickupLat,
-      pickup_lng: pickupLng,
-      pickup_address: storeAddr.street || store.name,
-      dropoff_lat: dropoffLat,
-      dropoff_lng: dropoffLng,
-      dropoff_address: deliveryAddr.street || deliveryAddr.city || 'Delivery address',
+      pickup: { lat: pickupLat, lng: pickupLng },
+      dropoff: { lat: dropoffLat, lng: dropoffLng },
       ride_type: 'moto',
-      customer_name: 'MyPlopPlop Delivery',
-      customer_phone: order.store.phone || '50900000000',
+      customer_name: recipientName,
+      customer_phone: recipientPhone,
       payment_method: 'cash',
-      notes: 'MyPlopPlop Order #' + order.orderNumber + ' from ' + store.name
+      price: order.deliveryFee || undefined,
+      notes: 'Livrezon MyPlopPlop #' + order.orderNumber + ' — Ranmase nan ' + store.name +
+        ' (' + (storeAddr.street || storeAddr.city || '') + '), livre bay ' + recipientName +
+        ' nan ' + (deliveryAddr.street || deliveryAddr.city || 'adrès livrezon an')
     };
 
     try {
