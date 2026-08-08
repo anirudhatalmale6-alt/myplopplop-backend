@@ -234,6 +234,30 @@ router.get('/stores', async (req, res) => {
   }
 });
 
+// Verify / approve / suspend a store from the admin panel
+router.patch('/stores/:id', async (req, res) => {
+  try {
+    const store = await Store.findById(req.params.id);
+    if (!store) return res.status(404).json({ error: 'Store not found' });
+
+    const { action, isVerified, status } = req.body;
+
+    if (action === 'verify') { store.isVerified = true; store.status = 'active'; }
+    else if (action === 'unverify') { store.isVerified = false; }
+    else if (action === 'suspend') { store.status = 'suspended'; }
+    else if (action === 'activate') { store.status = 'active'; }
+    else {
+      if (typeof isVerified === 'boolean') store.isVerified = isVerified;
+      if (status) store.status = status;
+    }
+
+    await store.save();
+    res.json({ success: true, store: { _id: store._id, name: store.name, isVerified: store.isVerified, status: store.status } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/koutye', async (req, res) => {
   try {
     const { status, search, page = 1 } = req.query;
