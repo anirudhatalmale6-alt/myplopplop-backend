@@ -106,7 +106,8 @@ router.post('/', protect, [
       logo: req.body.logo || '',
       coverImage: req.body.coverImage || '',
       deliveryOptions: req.body.deliveryOptions || {},
-      status: 'active'
+      status: 'active',
+      isVerified: true // auto-verify new merchant stores on signup
     });
 
     res.status(201).json({ success: true, data: store });
