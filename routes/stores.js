@@ -21,7 +21,7 @@ router.get('/', async function(req, res) {
     }
 
     var stores = await Store.find(query)
-      .select('name slug category logo coverImage rating stats address deliveryOptions isFeatured isVerified')
+      .select('name slug category logo coverImage rating stats address deliveryOptions isFeatured isVerified status')
       .sort({ isFeatured: -1, 'rating.average': -1 })
       .skip((page - 1) * limit)
       .limit(limit);
