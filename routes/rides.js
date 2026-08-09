@@ -168,6 +168,28 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
   }
 });
 
+// GET /api/rides/my-offer - The delivery currently offered to THIS driver (30s window),
+// plus any job they've already accepted and are still working on.
+router.get('/my-offer', protect, authorize('driver'), async (req, res) => {
+  try {
+    const offer = await Ride.findOne({
+      type: 'delivery',
+      status: 'requested',
+      offeredTo: req.user._id,
+      offerExpiresAt: { $gt: new Date() }
+    }).populate('customer', 'name phone').populate('store', 'name');
+
+    const active = await Ride.findOne({
+      driver: req.user._id,
+      status: { $in: ['accepted', 'picking_up', 'in_progress'] }
+    }).populate('customer', 'name phone').populate('store', 'name');
+
+    res.json({ success: true, data: { offer: offer || null, active: active || null } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // PUT /api/rides/:id/decline - Driver declines an offer → auto re-offer to next closest
 router.put('/:id/decline', protect, authorize('driver'), async (req, res) => {
   try {
@@ -209,6 +231,14 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
 
     if (!validTransitions[ride.status]?.includes(status)) {
       return res.status(400).json({ success: false, message: `Cannot change from ${ride.status} to ${status}` });
+    }
+
+    // Secure handover: the customer gives the driver the 4-digit code to complete.
+    if (status === 'delivered' && ride.pin) {
+      const given = String(req.body.pin || '').trim();
+      if (given !== String(ride.pin)) {
+        return res.status(400).json({ success: false, code: 'pin_required', message: 'Wrong delivery code. Ask the customer for their 4-digit code.' });
+      }
     }
 
     ride.status = status;
