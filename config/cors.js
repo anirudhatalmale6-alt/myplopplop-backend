@@ -23,7 +23,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-pin']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-pin', 'x-mpp-odoo-token']
 };
 
 module.exports = corsOptions;

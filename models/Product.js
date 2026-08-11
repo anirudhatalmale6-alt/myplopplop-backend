@@ -55,11 +55,26 @@ const productSchema = new mongoose.Schema({
     average: { type: Number, default: 0 },
     count: { type: Number, default: 0 }
   },
-  orderCount: { type: Number, default: 0 }
+  orderCount: { type: Number, default: 0 },
+
+  // ─── Catalogue source ───
+  // Products can arrive by hand, by CSV, or straight out of a merchant's own
+  // system (Odoo). The last case needs a stable key back to their record so a
+  // price change updates the row instead of creating a second one.
+  sku: { type: String, trim: true, default: '' },
+  externalId: { type: String, trim: true, default: '' },
+  source: {
+    type: String,
+    enum: ['manual', 'csv', 'odoo'],
+    default: 'manual'
+  },
+  lastSyncedAt: Date
 }, {
   timestamps: true
 });
 
+productSchema.index({ store: 1, source: 1, externalId: 1 });
+productSchema.index({ store: 1, sku: 1 });
 productSchema.index({ store: 1, isActive: 1 });
 productSchema.index({ category: 1 });
 productSchema.index({ name: 'text', description: 'text' });

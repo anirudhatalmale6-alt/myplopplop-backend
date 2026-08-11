@@ -39,14 +39,14 @@ const verifyStoreAccess = async (req, res) => {
 
 router.get('/template', (req, res) => {
   const data = [
-    ['name', 'price', 'category', 'description', 'stockQuantity', 'unit', 'comparePrice', 'inStock'],
-    ['Diri Blan (Riz Blanc)', 150, 'grocery', 'Sak diri blan 5 liv', 200, 'bag', 180, 'true'],
-    ['Pwa Nwa (Black Beans)', 85, 'grocery', 'Pwa nwa sek 1 liv', 350, 'bag', 100, 'true'],
-    ['Luil Maskreti', 250, 'grocery', 'Luil kwit manje 1 lit', 120, 'bottle', 300, 'true'],
-    ['Pen Kreyol', 25, 'bakery', 'Pen fre chak jou', 50, 'piece', '', 'true'],
-    ['Manba (Peanut Butter)', 75, 'grocery', 'Manba natiral 500g', 80, 'jar', 90, 'true'],
-    ['Dlo Filtre', 20, 'beverage', 'Dlo pwop 500ml', 500, 'bottle', 25, 'true'],
-    ['Pikliz', 60, 'condiment', 'Pikliz tradisyonel 250ml', 45, 'jar', 75, 'true']
+    ['name', 'price', 'category', 'description', 'stockQuantity', 'unit', 'comparePrice', 'inStock', 'sku'],
+    ['Diri Blan (Riz Blanc)', 150, 'grocery', 'Sak diri blan 5 liv', 200, 'bag', 180, 'true', 'DIRI-5LB'],
+    ['Pwa Nwa (Black Beans)', 85, 'grocery', 'Pwa nwa sek 1 liv', 350, 'bag', 100, 'true', 'PWA-1LB'],
+    ['Luil Maskreti', 250, 'grocery', 'Luil kwit manje 1 lit', 120, 'bottle', 300, 'true', 'LUIL-1L'],
+    ['Pen Kreyol', 25, 'bakery', 'Pen fre chak jou', 50, 'piece', '', 'true', ''],
+    ['Manba (Peanut Butter)', 75, 'grocery', 'Manba natiral 500g', 80, 'jar', 90, 'true', 'MANBA-500'],
+    ['Dlo Filtre', 20, 'beverage', 'Dlo pwop 500ml', 500, 'bottle', 25, 'true', 'DLO-500'],
+    ['Pikliz', 60, 'condiment', 'Pikliz tradisyonel 250ml', 45, 'jar', 75, 'true', 'PIK-250']
   ];
   const ws = XLSX.utils.aoa_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -123,13 +123,22 @@ router.post('/:storeId/upload', protect, upload.single('file'), async (req, res)
         productData.comparePrice = parseFloat(row.comparePrice);
       }
 
+      if (row.sku !== undefined && String(row.sku).trim() !== '') {
+        productData.sku = String(row.sku).trim();
+      }
+
       try {
-        const existing = await Product.findOne({ name: productData.name, store: store._id });
+        // Prefer the SKU when the sheet carries one — a merchant renaming a
+        // product should update the row, not create a second one.
+        const existing = productData.sku
+          ? await Product.findOne({ store: store._id, sku: productData.sku })
+            || await Product.findOne({ name: productData.name, store: store._id })
+          : await Product.findOne({ name: productData.name, store: store._id });
         if (existing) {
           await Product.updateOne({ _id: existing._id }, { $set: productData });
           updated++;
         } else {
-          await Product.create(productData);
+          await Product.create(Object.assign({ source: 'csv' }, productData));
           created++;
         }
       } catch (err) {

@@ -36,6 +36,7 @@ const biznisiqRoutes = require('./routes/biznisiq');
 const categoryRoutes = require('./routes/categories');
 const supplierRoutes = require('./routes/supplier');
 const marketplaceRoutes = require('./routes/marketplace');
+const odooRoutes = require('./routes/odoo');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -95,6 +96,7 @@ app.use('/api/biznisiq', biznisiqRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/supplier', supplierRoutes);
 app.use('/api/marketplace', marketplaceRoutes);
+app.use('/api/odoo', odooRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -202,6 +204,19 @@ connectDB().then(() => {
     console.log('Delivery dispatch engine started (10s tick)');
   } catch (e) {
     console.error('Failed to start dispatch engine:', e.message);
+  }
+
+  // Odoo catalogue sync: merchants running Odoo (MSC Xpress) change prices
+  // constantly, so we re-pull whatever moved on their side. Each connection
+  // carries its own interval; this ticker just checks who is due.
+  try {
+    const odooSync = require('./services/odoo/odooSync');
+    setInterval(() => {
+      odooSync.tick().catch((e) => console.error('Odoo sync tick error:', e.message));
+    }, 60 * 1000);
+    console.log('Odoo catalogue sync started (60s tick)');
+  } catch (e) {
+    console.error('Failed to start Odoo sync:', e.message);
   }
 }).catch((err) => {
   console.error('Failed to start:', err);
