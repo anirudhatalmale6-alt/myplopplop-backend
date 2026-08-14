@@ -3,6 +3,8 @@ const User = require('../models/User');
 const DriverProfile = require('../models/DriverProfile');
 const Ride = require('../models/Ride');
 const Transaction = require('../models/Transaction');
+const Order = require('../models/Order');
+const Store = require('../models/Store');
 const { protect, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -150,6 +152,73 @@ router.get('/transactions', async (req, res) => {
 
     const total = await Transaction.countDocuments(query);
     res.json({ success: true, count: transactions.length, total, transactions });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/admin/orders - Every marketplace order (the admin Orders screen had
+// no endpoint to call, which is why it was still showing sample rows)
+router.get('/orders', async (req, res) => {
+  try {
+    const { status, page = 1, limit = 50 } = req.query;
+    const query = {};
+    if (status) query.status = status;
+
+    const orders = await Order.find(query)
+      .populate('customer', 'name phone')
+      .populate('store', 'name phone')
+      .populate('rider', 'name phone')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+
+    const total = await Order.countDocuments(query);
+    res.json({ success: true, count: orders.length, total, orders });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/admin/stores - Every store, including suspended/pending ones that
+// the public GET /api/stores deliberately hides
+router.get('/stores', async (req, res) => {
+  try {
+    const { status, page = 1, limit = 100 } = req.query;
+    const query = {};
+    if (status) query.status = status;
+
+    const stores = await Store.find(query)
+      .populate('owner', 'name phone email')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+
+    const total = await Store.countDocuments(query);
+    res.json({ success: true, count: stores.length, total, stores });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// PATCH /api/admin/stores/:id - verify / unverify / suspend / activate
+router.patch('/stores/:id', async (req, res) => {
+  try {
+    const store = await Store.findById(req.params.id);
+    if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+
+    const action = req.body.action;
+    if (action === 'verify') store.isVerified = true;
+    else if (action === 'unverify') store.isVerified = false;
+    else if (action === 'suspend') store.status = 'suspended';
+    else if (action === 'activate') store.status = 'active';
+    else {
+      if (req.body.isVerified !== undefined) store.isVerified = !!req.body.isVerified;
+      if (req.body.status !== undefined) store.status = req.body.status;
+    }
+
+    await store.save();
+    res.json({ success: true, data: store });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
