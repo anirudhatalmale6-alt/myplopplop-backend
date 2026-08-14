@@ -42,9 +42,34 @@ router.post('/release', protect, authorize('admin'), async function(req, res) {
 });
 
 // ─── GET VENDOR WALLET SUMMARY ───
-router.get('/wallet', protect, authorize('merchant'), async function(req, res) {
+router.get('/wallet', protect, authorize('merchant', 'driver'), async function(req, res) {
   try {
     var user = await User.findById(req.user._id);
+
+    // Drivers have no stores; their earnings land in wallet.balance directly.
+    if (req.user.role === 'driver') {
+      var driverPayouts = await Transaction.find({ user: req.user._id, type: 'withdrawal' })
+        .sort('-createdAt').limit(10);
+      var earned = await Transaction.aggregate([
+        { $match: { user: user._id, type: 'earning' } },
+        { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+      ]);
+      return res.json({
+        success: true,
+        data: {
+          balance: user.wallet.balance,
+          pending_balance: user.wallet.pending_balance,
+          available_balance: user.wallet.balance, // what a driver can actually withdraw
+          currency: user.wallet.currency,
+          lifetime_earned: (earned[0] && earned[0].total) || 0,
+          earning_count: (earned[0] && earned[0].count) || 0,
+          pending_orders: 0,
+          available_orders: 0,
+          recent_payouts: driverPayouts
+        }
+      });
+    }
+
     var stores = await Store.find({ owner: req.user._id });
     var storeIds = stores.map(function(s) { return s._id; });
 
@@ -80,31 +105,37 @@ router.get('/wallet', protect, authorize('merchant'), async function(req, res) {
   }
 });
 
-// ─── REQUEST PAYOUT (vendor) ───
-router.post('/request', protect, authorize('merchant'), async function(req, res) {
+// ─── REQUEST PAYOUT (merchant or driver) ───
+// Merchants are paid from available_balance (order money released after review).
+// Drivers are credited straight to balance when a delivery completes, so they
+// draw from there. The bucket is recorded so a rejection refunds the right one.
+router.post('/request', protect, authorize('merchant', 'driver'), async function(req, res) {
   try {
     var user = await User.findById(req.user._id);
     var minPayout = 500; // 500 HTG minimum
+    var bucket = req.user.role === 'driver' ? 'balance' : 'available_balance';
+    var funds = user.wallet[bucket] || 0;
 
-    if (user.wallet.available_balance < minPayout) {
+    if (funds < minPayout) {
       return res.status(400).json({
         success: false,
-        message: 'Balans minimòm ' + minPayout + ' HTG pou mande peman. Balans disponib: ' + user.wallet.available_balance + ' HTG'
+        message: 'Balans minimòm ' + minPayout + ' HTG pou mande peman. Balans disponib: ' + funds + ' HTG'
       });
     }
 
-    var amount = req.body.amount || user.wallet.available_balance;
-    if (amount > user.wallet.available_balance) {
-      amount = user.wallet.available_balance;
+    var amount = Number(req.body.amount) || funds;
+    if (amount > funds) {
+      amount = funds;
     }
     if (amount < minPayout) {
       return res.status(400).json({ success: false, message: 'Montan minimòm: ' + minPayout + ' HTG' });
     }
 
     var method = req.body.method || 'moncash';
+    var recipient = (req.body.recipient || user.phone || '').toString().trim();
 
-    // Deduct from available, move to main balance as "processing"
-    user.wallet.available_balance -= amount;
+    // Hold the money out of the wallet while the request is pending
+    user.wallet[bucket] -= amount;
     await user.save();
 
     var transaction = await Transaction.create({
@@ -114,7 +145,9 @@ router.post('/request', protect, authorize('merchant'), async function(req, res)
       currency: 'HTG',
       method: method,
       status: 'pending',
-      description: 'Payout request via ' + method
+      sourceBucket: bucket,
+      recipient: recipient,
+      description: 'Payout request via ' + method + (recipient ? ' to ' + recipient : '')
     });
 
     res.status(201).json({
@@ -149,10 +182,11 @@ router.put('/process/:transactionId', protect, authorize('admin'), async functio
     } else if (action === 'reject') {
       transaction.status = 'failed';
       await transaction.save();
-      // Refund to available_balance
+      // Refund to whichever bucket the money was taken from
       var user = await User.findById(transaction.user);
       if (user) {
-        user.wallet.available_balance += transaction.amount;
+        var bucket = transaction.sourceBucket || 'available_balance';
+        user.wallet[bucket] = (user.wallet[bucket] || 0) + transaction.amount;
         await user.save();
       }
     }

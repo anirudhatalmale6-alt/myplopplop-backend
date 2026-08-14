@@ -33,7 +33,16 @@ const transactionSchema = new mongoose.Schema({
     default: 'pending'
   },
   reference: String,
-  description: String
+  description: String,
+  // Which wallet bucket the money left, so a rejected payout is refunded to the
+  // same place it came from. Merchants are paid out of available_balance;
+  // drivers are credited straight to balance when a delivery completes.
+  sourceBucket: {
+    type: String,
+    enum: ['available_balance', 'balance'],
+    default: 'available_balance'
+  },
+  recipient: String
 }, {
   timestamps: true
 });
