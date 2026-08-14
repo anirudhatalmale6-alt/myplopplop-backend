@@ -128,7 +128,7 @@ router.put('/:id', protect, async function(req, res) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    var allowed = ['name', 'description', 'phone', 'email', 'address', 'openingHours', 'deliveryOptions', 'logo', 'coverImage', 'status'];
+    var allowed = ['name', 'description', 'category', 'phone', 'email', 'address', 'openingHours', 'deliveryOptions', 'logo', 'coverImage', 'status'];
     allowed.forEach(function(field) {
       if (req.body[field] !== undefined) store[field] = req.body[field];
     });

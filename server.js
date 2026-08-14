@@ -63,8 +63,10 @@ app.use('/api/', limiter);
 
 // Body parsing
 app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// 10mb: store/product logos and photos are sent as base64 data URLs.
+// The express default (100kb) silently 413'd every real phone photo.
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: false, limit: '10mb' }));
 
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
