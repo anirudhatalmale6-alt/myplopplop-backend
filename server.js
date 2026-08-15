@@ -37,6 +37,7 @@ const categoryRoutes = require('./routes/categories');
 const supplierRoutes = require('./routes/supplier');
 const marketplaceRoutes = require('./routes/marketplace');
 const odooRoutes = require('./routes/odoo');
+const assistantRoutes = require('./routes/assistant');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -99,6 +100,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/supplier', supplierRoutes);
 app.use('/api/marketplace', marketplaceRoutes);
 app.use('/api/odoo', odooRoutes);
+app.use('/api/assistant', assistantRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
