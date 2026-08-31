@@ -40,9 +40,15 @@ function sameSecret(a, b) {
 let cache = { at: 0, doc: null };
 async function setting() {
   if (Date.now() - cache.at < 15000) return cache.doc;
-  const doc = await AdminSetting.findOne({ key: 'console' }).select('+pinSalt +pinHash');
-  cache = { at: Date.now(), doc };
-  return doc;
+  try {
+    const doc = await AdminSetting.findOne({ key: 'console' }).select('+pinSalt +pinHash');
+    cache = { at: Date.now(), doc };
+    return doc;
+  } catch (e) {
+    // A database hiccup must not lock him out of his own console — fall back
+    // to the bootstrap code rather than answering 500 to every admin request.
+    return null;
+  }
 }
 
 async function pinIsValid(raw) {
