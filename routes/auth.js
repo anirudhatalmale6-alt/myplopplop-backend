@@ -181,48 +181,22 @@ router.put('/profile', protect, async (req, res) => {
   }
 });
 
-// POST /api/auth/forgot-pin — reset PIN by phone number
-// Since no SMS service is configured yet, this resets PIN directly
-// In production, this should send an OTP via SMS first
-router.post('/forgot-pin', [
-  body('phone').trim().notEmpty().withMessage('Phone number is required'),
-  body('newPin').isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
-    .isNumeric().withMessage('PIN must be numeric')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, errors: errors.array() });
-  }
-
-  try {
-    const { phone, newPin } = req.body;
-    const user = await User.findOne({ phone }).select('+password');
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'No account found with this phone number' });
-    }
-
-    user.password = newPin;
-    await user.save();
-
-    const token = user.getSignedJwtToken();
-
-    res.json({
-      success: true,
-      message: 'PIN reset successfully',
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        phone: user.phone,
-        role: user.role,
-        language: user.language,
-        wallet: user.wallet,
-        referralCode: user.referralCode
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+// POST /api/auth/forgot-pin
+//
+// This used to set a new PIN on any account given nothing but its phone number,
+// and phone numbers are printed on the public store pages — so it handed anyone
+// who could read a shop listing the keys to that shop. It no longer resets
+// anything. A merchant who knows their PIN changes it themselves from Settings
+// (PUT /change-pin); one who has genuinely forgotten it asks the agent who
+// signed them up, and the agent resets it from the console
+// (POST /api/admin-pin/reset-user-pin).
+router.post('/forgot-pin', async (req, res) => {
+  res.status(403).json({
+    success: false,
+    code: 'ASK_YOUR_AGENT',
+    message: 'For your security a PIN can no longer be reset from this page. ' +
+             'Contact the agent who registered your shop and they will reset it for you.'
+  });
 });
 
 // PUT /api/auth/change-pin
@@ -239,7 +213,9 @@ router.put('/change-pin', protect, [
     const user = await User.findById(req.user._id).select('+password');
     const isMatch = await user.matchPassword(req.body.currentPin);
     if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Current PIN is incorrect' });
+      // 400, not 401: the caller IS signed in, they just mistyped. A 401 makes
+      // the app treat it as an expired session and sign them out on a typo.
+      return res.status(400).json({ success: false, code: 'WRONG_PIN', message: 'Current PIN is incorrect' });
     }
 
     user.password = req.body.newPin;

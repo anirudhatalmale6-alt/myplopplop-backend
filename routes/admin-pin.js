@@ -12,15 +12,47 @@ try { Koutye = require('../models/Koutye'); } catch(e) { Koutye = null; }
 try { KoutyeReferral = require('../models/KoutyeReferral'); } catch(e) { KoutyeReferral = null; }
 try { ParenajSignup = require('../models/ParenajSignup'); } catch(e) { ParenajSignup = null; }
 
-const ADMIN_PIN = process.env.ADMIN_PIN || 'hb2026admin';
-
-function requirePin(req, res, next) {
-  const pin = req.headers['x-admin-pin'] || req.query.pin;
-  if (pin !== ADMIN_PIN) return res.status(403).json({ error: 'Invalid PIN' });
-  next();
-}
+const { requirePin, isCustom, setConsolePin } = require('../utils/consolePin');
 
 router.use(requirePin);
+
+/* Has he replaced the bootstrap code yet? The console nags until he has. */
+router.get('/pin-state', async (req, res) => {
+  try {
+    res.json({ success: true, custom: await isCustom() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* Set your own console code. requirePin above already proved the caller holds
+   the code currently in force, so there is nothing more to check here. */
+router.post('/change-pin', async (req, res) => {
+  try {
+    await setConsolePin(req.body && req.body.newPin);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/* Reset a merchant's or driver's PIN for them. This replaces the old public
+   "forgot PIN" page, which reset any account given only its phone number. */
+router.post('/reset-user-pin', async (req, res) => {
+  try {
+    const phone = String((req.body && req.body.phone) || '').trim();
+    const newPin = String((req.body && req.body.newPin) || '').trim();
+    if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+    if (!/^[0-9]{4}$/.test(newPin)) return res.status(400).json({ error: 'PIN must be 4 digits' });
+    const user = await User.findOne({ phone }).select('+password');
+    if (!user) return res.status(404).json({ error: 'No account with that phone number' });
+    user.password = newPin;
+    await user.save();
+    res.json({ success: true, name: user.name, phone: user.phone, role: user.role });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 router.get('/dashboard', async (req, res) => {
   try {
