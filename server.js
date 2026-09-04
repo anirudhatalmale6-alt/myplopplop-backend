@@ -7,6 +7,8 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
+const START_TIME = new Date().toISOString();
+
 const connectDB = require('./config/db');
 const corsOptions = require('./config/cors');
 
@@ -104,7 +106,15 @@ app.use('/api/assistant', assistantRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'MyPlopPlop API', version: '1.0.0' });
+  // Which commit is actually serving. Without this there is no way to tell a
+  // deployed fix from a fix that is still sitting in the repository.
+  res.json({
+    status: 'ok',
+    service: 'MyPlopPlop API',
+    version: '1.0.0',
+    commit: (process.env.RENDER_GIT_COMMIT || 'local').substring(0, 7),
+    startedAt: START_TIME
+  });
 });
 
 // 404 handler
