@@ -147,6 +147,17 @@ router.get('/dashboard', async (req, res) => {
       status: o.status
     }));
 
+    // A new store is the one thing the activity feed never showed, so a merchant
+    // could sign up and leave no trace on this screen.
+    const recentStores = await Store.find().sort({ createdAt: -1 }).limit(5).populate('owner', 'name phone').lean();
+    recentStores.forEach(s => recent.push({
+      type: 'store', date: s.createdAt,
+      label: s.name + ' — ' + (s.category || 'other'),
+      detail: (s.owner?.name || '') + (s.referralPartner ? ' · ref: ' + s.referralPartner : ''),
+      status: s.status,
+      phone: s.phone || s.owner?.phone
+    }));
+
     const recentRides = await Ride.find().sort({ createdAt: -1 }).limit(5).populate('customer', 'name phone').lean();
     recentRides.forEach(r => recent.push({
       type: 'ride', date: r.createdAt,

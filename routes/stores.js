@@ -107,8 +107,20 @@ router.post('/', protect, [
       coverImage: req.body.coverImage || '',
       deliveryOptions: req.body.deliveryOptions || {},
       status: 'active',
-      isVerified: true // auto-verify new merchant stores on signup
+      isVerified: true, // auto-verify new merchant stores on signup
+      referralPartner: req.body.referralPartner || undefined
     });
+
+    // Tell the office a real store just appeared, with the partner who sent them.
+    try {
+      require('../utils/notify').notifySignup('store', {
+        storeName: store.name,
+        name: user.name,
+        phone: store.phone || user.phone,
+        category: store.category,
+        referralPartner: store.referralPartner || ''
+      }).catch(function() {});
+    } catch (e) { /* notification must never block a store being created */ }
 
     res.status(201).json({ success: true, data: store });
   } catch (err) {
@@ -132,6 +144,12 @@ router.put('/:id', protect, async function(req, res) {
     allowed.forEach(function(field) {
       if (req.body[field] !== undefined) store[field] = req.body[field];
     });
+
+    // The partner who introduced the merchant is set once, at sign-up, and is
+    // not something a later edit can quietly reassign.
+    if (!store.referralPartner && req.body.referralPartner) {
+      store.referralPartner = req.body.referralPartner;
+    }
 
     await store.save();
     res.json({ success: true, data: store });

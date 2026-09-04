@@ -77,7 +77,10 @@ const storeSchema = new mongoose.Schema({
     default: 'active'
   },
   isVerified: { type: Boolean, default: false },
-  isFeatured: { type: Boolean, default: false }
+  isFeatured: { type: Boolean, default: false },
+  // Who sent this merchant to us (SPAP, FTPH/COTRASMOTHA, Facebook, a friend...).
+  // Set once at sign-up from the ?ref= on the partner's own link.
+  referralPartner: { type: String, trim: true, maxlength: 80 }
 }, {
   timestamps: true
 });

@@ -26,8 +26,15 @@ router.post('/register', [
       return res.status(400).json({ success: false, message: 'PIN must be at least 4 digits' });
     }
 
-    // Check if phone already exists
-    const existing = await User.findOne({ phone });
+    // Check if phone already exists - written any way at all, so the same person
+    // cannot end up with two accounts and two half-empty stores.
+    let existing = await User.findOne({ phone });
+    if (!existing) {
+      const digits = String(phone).replace(/\D/g, '');
+      if (digits.length >= 8 && digits.length <= 20) {
+        existing = await User.findOne({ phone: new RegExp('^[^0-9]*' + digits.split('').join('[^0-9]*') + '$') });
+      }
+    }
     if (existing) {
       return res.status(400).json({ success: false, message: 'Phone number already registered' });
     }
@@ -95,7 +102,20 @@ router.post('/login', [
       return res.status(400).json({ success: false, message: 'PIN is required' });
     }
 
-    const user = await User.findOne({ phone }).select('+password');
+    let user = await User.findOne({ phone }).select('+password');
+
+    // People write their number a different way every time: "+509 4498-6608"
+    // today, "+50944986608" tomorrow. When the literal string misses, match on
+    // the digits alone - separators only, never a different country code - or a
+    // merchant who signed up on one screen can never log in on another.
+    if (!user) {
+      const digits = String(phone).replace(/\D/g, '');
+      if (digits.length >= 8 && digits.length <= 20) {
+        const loose = new RegExp('^[^0-9]*' + digits.split('').join('[^0-9]*') + '$');
+        user = await User.findOne({ phone: loose }).select('+password');
+      }
+    }
+
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
