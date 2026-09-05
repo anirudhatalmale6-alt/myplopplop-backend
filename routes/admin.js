@@ -85,6 +85,10 @@ router.put('/drivers/:id/verify', async (req, res) => {
     } else if (action === 'reject') {
       profile.status = 'rejected';
       profile.rejectionReason = reason || 'Documents not valid';
+      // Approving recorded who and when; rejecting did not, so a refused driver
+      // had no trace of who refused him or on what day.
+      profile.verifiedBy = req.user._id;
+      profile.verifiedAt = new Date();
     } else {
       return res.status(400).json({ success: false, message: 'Action must be approve or reject' });
     }
