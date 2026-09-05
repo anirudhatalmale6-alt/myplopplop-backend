@@ -273,7 +273,14 @@ router.post('/referrals/track', protect, async (req, res) => {
 });
 
 // POST /api/koutye/commissions/record - Record a commission from a transaction
-router.post('/commissions/record', async (req, res) => {
+//
+// This writes a row that the payout run later turns into real money, and it
+// had no login on it at all: anyone who learned a referral id could credit an
+// agent as often as they liked. No page on any of the sites calls it - the
+// commissions that matter are raised by the code that takes the payment
+// (routes/payments.js) and the code that finishes a ride (routes/rides.js).
+// It stays only as an admin correction tool.
+router.post('/commissions/record', protect, authorize('admin'), async (req, res) => {
   try {
     const { referralId, sourceAmount, description, sourceTransaction } = req.body;
 

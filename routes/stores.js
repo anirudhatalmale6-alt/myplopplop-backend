@@ -63,7 +63,16 @@ router.get('/s/:slug', async function(req, res) {
 // ─── GET STORE BY ID (public) ───
 router.get('/:id', async function(req, res) {
   try {
-    var store = await Store.findOne({ _id: req.params.id, status: 'active' });
+    // A shop link that carries a name instead of an id - a shared link that
+    // got edited, an old bookmark, /api/stores/products - used to reach
+    // Store.findOne with something that is not an id at all, and mongoose
+    // threw. The shopper saw "Server error" for what is really just a shop
+    // that is not there. Answer the question that was actually asked: look it
+    // up by slug too, and say "not found" when it is not found.
+    var byId = /^[0-9a-fA-F]{24}$/.test(String(req.params.id));
+    var store = await Store.findOne(byId
+      ? { _id: req.params.id, status: 'active' }
+      : { slug: req.params.id, status: 'active' });
     if (!store) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }

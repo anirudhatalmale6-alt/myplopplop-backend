@@ -262,122 +262,93 @@ router.get('/history', async (req, res) => {
 // PAYMENT WEBHOOKS
 // ══════════════════════════════════════════
 
-// POST /api/utility/webhook/moncash
-router.post('/webhook/moncash', async (req, res) => {
-  try {
-    const payload = req.body;
-    const refId = payload.reference_id || payload.refference_id || payload.orderId || '';
+// A webhook URL is public by definition — the payment provider has to be able
+// to reach it without a login. These three used to take the POST body at its
+// word: anyone who sent
+//
+//     { "reference_id": "<a real reference>", "status": "completed" }
+//
+// marked that bill PAID and pushed it into processing. The reference is
+// printed on the customer's own confirmation screen, so this was one curl
+// away from free electricity top-ups.
+//
+// Nothing in the body is trusted now. The reference is the only thing taken
+// from it, and the money is confirmed by asking SolutionIP directly. If
+// SolutionIP does not say the transaction is settled, the bill stays pending
+// — a genuine payment is never lost, it is just picked up by the customer's
+// own /verify call or by the admin reconcile screen.
+async function handlePaymentWebhook(method, req, res) {
+  const payload = req.body || {};
+  const refId = payload.reference_id || payload.refference_id || payload.orderId || '';
+  let confirmed = false;
+  let provider = null;
 
-    const transaction = await UtilityTransaction.findOne({ reference_id: refId });
+  try {
+    if (refId) {
+      try {
+        provider = await verifySolutionIPPayment(refId);
+        confirmed = provider && provider.status === true && provider.trans_status === 'ok';
+      } catch (e) {
+        // Provider unreachable. Fail closed and say so loudly - a webhook we
+        // could not confirm must never move money.
+        console.error(method.toUpperCase() + ' webhook: could not reach SolutionIP for ' +
+          refId + ' - leaving it pending. ' + e.message);
+      }
+    }
+
+    const transaction = refId ? await UtilityTransaction.findOne({ reference_id: refId }) : null;
+
+    if (payload.status === 'completed' || payload.status === 'success') {
+      if (!confirmed) {
+        console.warn('REJECTED ' + method + ' webhook for "' + refId +
+          '": the caller said the payment succeeded, SolutionIP did not agree' +
+          (provider ? ' (trans_status=' + provider.trans_status + ')' : ''));
+      }
+    }
 
     await PaymentLog.create({
       transaction_id: transaction ? transaction._id : undefined,
-      payment_method: 'moncash',
-      provider_reference: payload.transaction_id || payload.transactionId || '',
-      amount: payload.amount || payload.montant || 0,
-      status: (payload.status === 'completed' || payload.status === 'success') ? 'completed' : 'failed',
-      raw_response: payload,
-      webhook_source: 'webhook_moncash'
+      payment_method: method,
+      provider_reference: (provider && provider.id_transaction) ||
+        payload.transaction_id || payload.transactionId || '',
+      // The provider's answer, not the caller's claim.
+      amount: (provider && provider.montant) || payload.amount || payload.montant || 0,
+      status: confirmed ? 'completed' : 'failed',
+      raw_response: { received: payload, verified: provider || null },
+      webhook_source: 'webhook_' + method
     });
 
-    if (transaction && (payload.status === 'completed' || payload.status === 'success')) {
+    if (transaction && confirmed && transaction.payment_status !== 'paid') {
       transaction.payment_status = 'paid';
       transaction.processing_status = 'processing';
-      transaction.provider_reference = payload.transaction_id || payload.transactionId || '';
+      transaction.provider_reference = (provider && provider.id_transaction) || '';
       transaction.status_logs.push({
         old_status: 'pending',
         new_status: 'paid',
-        note: 'MonCash webhook: payment confirmed',
+        note: method.toUpperCase() + ' webhook, confirmed with SolutionIP',
         changed_by: 'webhook'
       });
       await transaction.save();
-      await logNotification(transaction._id, 'whatsapp', transaction.phone, 'MonCash payment confirmed for ' + refId, 'payment_confirmed');
+      await logNotification(transaction._id, 'whatsapp', transaction.phone,
+        method.toUpperCase() + ' payment confirmed for ' + refId, 'payment_confirmed');
     }
 
+    // Always 200: a provider that gets an error retries for hours.
     res.json({ success: true });
   } catch (error) {
-    console.error('MonCash webhook error:', error);
+    console.error(method + ' webhook error:', error);
     res.status(200).json({ success: true });
   }
-});
+}
+
+// POST /api/utility/webhook/moncash
+router.post('/webhook/moncash', (req, res) => handlePaymentWebhook('moncash', req, res));
 
 // POST /api/utility/webhook/natcash
-router.post('/webhook/natcash', async (req, res) => {
-  try {
-    const payload = req.body;
-    const refId = payload.reference_id || payload.refference_id || payload.orderId || '';
-
-    const transaction = await UtilityTransaction.findOne({ reference_id: refId });
-
-    await PaymentLog.create({
-      transaction_id: transaction ? transaction._id : undefined,
-      payment_method: 'natcash',
-      provider_reference: payload.transaction_id || payload.transactionId || '',
-      amount: payload.amount || payload.montant || 0,
-      status: (payload.status === 'completed' || payload.status === 'success') ? 'completed' : 'failed',
-      raw_response: payload,
-      webhook_source: 'webhook_natcash'
-    });
-
-    if (transaction && (payload.status === 'completed' || payload.status === 'success')) {
-      transaction.payment_status = 'paid';
-      transaction.processing_status = 'processing';
-      transaction.provider_reference = payload.transaction_id || payload.transactionId || '';
-      transaction.status_logs.push({
-        old_status: 'pending',
-        new_status: 'paid',
-        note: 'NatCash webhook: payment confirmed',
-        changed_by: 'webhook'
-      });
-      await transaction.save();
-      await logNotification(transaction._id, 'whatsapp', transaction.phone, 'NatCash payment confirmed for ' + refId, 'payment_confirmed');
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('NatCash webhook error:', error);
-    res.status(200).json({ success: true });
-  }
-});
+router.post('/webhook/natcash', (req, res) => handlePaymentWebhook('natcash', req, res));
 
 // POST /api/utility/webhook/card
-router.post('/webhook/card', async (req, res) => {
-  try {
-    const payload = req.body;
-    const refId = payload.reference_id || payload.refference_id || payload.orderId || '';
-
-    const transaction = await UtilityTransaction.findOne({ reference_id: refId });
-
-    await PaymentLog.create({
-      transaction_id: transaction ? transaction._id : undefined,
-      payment_method: 'card',
-      provider_reference: payload.transaction_id || payload.transactionId || '',
-      amount: payload.amount || payload.montant || 0,
-      status: (payload.status === 'completed' || payload.status === 'success') ? 'completed' : 'failed',
-      raw_response: payload,
-      webhook_source: 'webhook_card'
-    });
-
-    if (transaction && (payload.status === 'completed' || payload.status === 'success')) {
-      transaction.payment_status = 'paid';
-      transaction.processing_status = 'processing';
-      transaction.provider_reference = payload.transaction_id || payload.transactionId || '';
-      transaction.status_logs.push({
-        old_status: 'pending',
-        new_status: 'paid',
-        note: 'Card webhook: payment confirmed',
-        changed_by: 'webhook'
-      });
-      await transaction.save();
-      await logNotification(transaction._id, 'whatsapp', transaction.phone, 'Card payment confirmed for ' + refId, 'payment_confirmed');
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Card webhook error:', error);
-    res.status(200).json({ success: true });
-  }
-});
+router.post('/webhook/card', (req, res) => handlePaymentWebhook('card', req, res));
 
 // ══════════════════════════════════════════
 // ADMIN ENDPOINTS

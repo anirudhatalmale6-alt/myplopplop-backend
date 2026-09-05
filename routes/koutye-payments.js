@@ -393,19 +393,52 @@ router.post('/commission/trigger', protect, authorize('admin'), async (req, res)
 
 // ─── Batch validate pending commissions ───
 // POST /api/koutye-payments/commission/validate-batch
+//
+// A commission row is created the moment somebody STARTS a package checkout,
+// before a gourde has moved. This used to flip every one of them to
+// 'validated' without asking whether the payment ever happened - so an
+// abandoned checkout, or a made-up one, became money owed to an agent. The
+// only correct source of truth is the transaction behind it: package/verify
+// already validates a commission when SolutionIP confirms that order.
+//
+// Now a commission is only validated if its transaction is completed. The
+// rest are reported back so you can see how many are waiting and why, instead
+// of them silently becoming payable.
 router.post('/commission/validate-batch', protect, authorize('admin'), async (req, res) => {
   try {
     const pending = await KoutyeCommission.find({ status: 'pending' });
     let validated = 0;
+    const skipped = [];
 
     for (const c of pending) {
+      const txn = c.transactionId
+        ? await Transaction.findOne({ reference: c.transactionId })
+        : null;
+
+      if (!txn || txn.status !== 'completed') {
+        skipped.push({
+          commissionId: c._id,
+          transactionId: c.transactionId,
+          amount: c.amount,
+          reason: txn ? 'payment is ' + txn.status : 'no payment record for this order'
+        });
+        continue;
+      }
+
       c.status = 'validated';
       c.validatedAt = new Date();
       await c.save();
       validated++;
     }
 
-    res.json({ success: true, data: { validatedCount: validated } });
+    res.json({
+      success: true,
+      data: {
+        validatedCount: validated,
+        skippedCount: skipped.length,
+        skipped: skipped.slice(0, 50)
+      }
+    });
   } catch (err) {
     console.error('Batch validate error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
