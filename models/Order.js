@@ -103,6 +103,7 @@ const orderSchema = new mongoose.Schema({
   cancelReason: String,
 
   // Timestamps
+  paidAt: Date,
   confirmedAt: Date,
   preparedAt: Date,
   pickedUpAt: Date,

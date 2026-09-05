@@ -36,6 +36,21 @@ router.post('/change-pin', async (req, res) => {
   }
 });
 
+/* The same number gets typed +50946859702, 509 4685 9702, 46859702... Match on
+   the digits when the exact string misses, exactly as login does. */
+async function findByPhone(phone, select) {
+  let q = User.findOne({ phone });
+  if (select) q = q.select(select);
+  let user = await q;
+  if (user) return user;
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length < 8 || digits.length > 20) return null;
+  const loose = new RegExp('^[^0-9]*' + digits.split('').join('[^0-9]*') + '$');
+  let q2 = User.findOne({ phone: loose });
+  if (select) q2 = q2.select(select);
+  return q2;
+}
+
 /* Reset a merchant's or driver's PIN for them. This replaces the old public
    "forgot PIN" page, which reset any account given only its phone number. */
 router.post('/reset-user-pin', async (req, res) => {
@@ -44,10 +59,66 @@ router.post('/reset-user-pin', async (req, res) => {
     const newPin = String((req.body && req.body.newPin) || '').trim();
     if (!phone) return res.status(400).json({ error: 'Phone number is required' });
     if (!/^[0-9]{4}$/.test(newPin)) return res.status(400).json({ error: 'PIN must be 4 digits' });
-    const user = await User.findOne({ phone }).select('+password');
+    const user = await findByPhone(phone, '+password');
     if (!user) return res.status(404).json({ error: 'No account with that phone number' });
     user.password = newPin;
     await user.save();
+    res.json({ success: true, name: user.name, phone: user.phone, role: user.role });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* Admin is granted here, from the console, and nowhere else. The sign-up form
+   used to hand it to anyone who asked for it in the request body; now the only
+   way in is holding the console code, which is the same bar as resetting a PIN.
+   Without this the admin screens (drivers, merchants, orders) have no way of
+   ever getting their first admin. */
+router.get('/admins', async (req, res) => {
+  try {
+    const admins = await User.find({ role: 'admin' }).select('name phone createdAt').lean();
+    res.json({ success: true, count: admins.length, admins });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/grant-admin', async (req, res) => {
+  try {
+    const phone = String((req.body && req.body.phone) || '').trim();
+    if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+    const user = await findByPhone(phone, '+password');
+    if (!user) return res.status(404).json({ error: 'No account with that phone number' });
+    if (user.role === 'admin') {
+      return res.json({ success: true, already: true, name: user.name, phone: user.phone });
+    }
+    user.previousRole = user.role;
+    user.role = 'admin';
+    await user.save();
+    console.warn('Console granted admin to ' + user.phone + ' (' + user.name + ')');
+    res.json({ success: true, name: user.name, phone: user.phone, role: user.role });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/revoke-admin', async (req, res) => {
+  try {
+    const phone = String((req.body && req.body.phone) || '').trim();
+    if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+    const user = await findByPhone(phone, '+password');
+    if (!user) return res.status(404).json({ error: 'No account with that phone number' });
+    if (user.role !== 'admin') {
+      return res.status(400).json({ error: 'That account is not an admin' });
+    }
+    /* Never leave the platform with nobody who can approve a driver. */
+    const others = await User.countDocuments({ role: 'admin', _id: { $ne: user._id } });
+    if (others === 0) {
+      return res.status(400).json({ error: 'That is the only admin left. Make someone else an admin first.' });
+    }
+    user.role = user.previousRole && user.previousRole !== 'admin' ? user.previousRole : 'customer';
+    await user.save();
+    console.warn('Console revoked admin from ' + user.phone);
     res.json({ success: true, name: user.name, phone: user.phone, role: user.role });
   } catch (e) {
     res.status(500).json({ error: e.message });

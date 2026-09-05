@@ -6,6 +6,14 @@ const { notifySignup } = require('../utils/notify');
 
 const router = express.Router();
 
+// The only roles anyone may ask for on the open sign-up form. 'admin' is in the
+// User enum, and this route used to copy req.body.role straight onto the new
+// account — so a stranger could POST role:"admin" and walk out with a token
+// that reads every user, phone number, order and transaction on the platform
+// and approves drivers. Admin is granted from the console instead
+// (POST /api/admin-pin/grant-admin), never asked for.
+const PUBLIC_ROLES = ['customer', 'merchant', 'driver'];
+
 // POST /api/auth/register
 // Accepts either 'password' or 'pin' field (frontend uses 4-digit PIN)
 router.post('/register', [
@@ -50,9 +58,14 @@ router.post('/register', [
       }
     }
 
+    const safeRole = PUBLIC_ROLES.indexOf(role) !== -1 ? role : 'customer';
+    if (role && safeRole !== role) {
+      console.warn('Sign-up asked for role "' + role + '" from ' + phone + ' - refused, created as customer');
+    }
+
     const user = await User.create({
       name, phone, email, password,
-      role: role || 'customer',
+      role: safeRole,
       language: language || 'fr',
       isDiaspora: isDiaspora || false,
       country,
@@ -60,8 +73,8 @@ router.post('/register', [
       referredAt: referredBy ? new Date() : undefined
     });
 
-    notifySignup(role === 'merchant' ? 'merchant' : 'user', {
-      name, phone, email, role: role || 'customer'
+    notifySignup(safeRole === 'merchant' ? 'merchant' : 'user', {
+      name, phone, email, role: safeRole
     }).catch(() => {});
 
     const token = user.getSignedJwtToken();

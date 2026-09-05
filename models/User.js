@@ -32,6 +32,12 @@ const userSchema = new mongoose.Schema({
     enum: ['customer', 'driver', 'merchant', 'admin'],
     default: 'customer'
   },
+  // What they were before the console made them an admin, so revoking gives a
+  // merchant their shop back instead of demoting them to a plain customer.
+  previousRole: {
+    type: String,
+    enum: ['customer', 'driver', 'merchant']
+  },
   avatar: String,
   language: {
     type: String,

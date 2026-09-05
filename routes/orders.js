@@ -297,34 +297,9 @@ router.put('/:id/status', protect, [
     if (req.body.status === 'preparing') order.preparedAt = new Date();
     if (req.body.status === 'picked_up') order.pickedUpAt = new Date();
     if (req.body.status === 'delivered') {
-      order.deliveredAt = new Date();
-      if (order.paymentStatus === 'paid') {
-        // Move to pending_balance (hold → verify → release)
-        var merchant = await User.findById(store.owner);
-        if (merchant) {
-          merchant.wallet.pending_balance += order.merchantEarning;
-          await merchant.save();
-        }
-        order.payoutStatus = 'pending';
-        // Credit delivery driver immediately (80%)
-        if (order.rider && order.deliveryDriverCut > 0) {
-          var driver = await User.findById(order.rider);
-          if (driver) {
-            driver.wallet.balance += order.deliveryDriverCut;
-            await driver.save();
-            await Transaction.create({
-              user: driver._id,
-              type: 'earning',
-              amount: order.deliveryDriverCut,
-              currency: 'HTG',
-              method: 'wallet',
-              status: 'completed',
-              reference: order.orderNumber,
-              description: 'Delivery earning (80%)'
-            });
-          }
-        }
-      }
+      // Shared with the delivery driver's own "delivered", so the money moves
+      // the same way whichever end closes the order. See services/completeOrder.
+      await require('../services/completeOrder').markOrderDelivered(order);
     }
     if (req.body.status === 'cancelled') {
       order.cancelledBy = isMerchant ? 'merchant' : 'system';

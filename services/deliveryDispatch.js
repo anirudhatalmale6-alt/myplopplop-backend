@@ -29,6 +29,21 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 function lng(coords) { return coords && coords.coordinates ? coords.coordinates[0] : 0; }
 function lat(coords) { return coords && coords.coordinates ? coords.coordinates[1] : 0; }
 
+// [0,0] is the schema default, not a place anyone shops from. Treat anything at
+// or next to null island as "we do not know where this is".
+function isRealPin(l, t) {
+  return Number.isFinite(l) && Number.isFinite(t) && (Math.abs(l) > 0.01 || Math.abs(t) > 0.01);
+}
+
+// When there is no distance to price from, the delivery is worth what the
+// customer was quoted and charged at checkout. Same 25% commission split.
+function fareFromQuote(quoted) {
+  const { COMMISSION_RATE, RATES } = require('../utils/fareCalculator');
+  const total = Math.round(Number(quoted) > 0 ? Number(quoted) : RATES.delivery.minFare);
+  const commission = Math.round(total * COMMISSION_RATE);
+  return { totalFare: total, commission, driverEarning: total - commission };
+}
+
 // Find the nearest online, approved delivery driver not already tried.
 async function findNearestDriver(pickupLngLat, excludeUserIds) {
   const profile = await DriverProfile.findOne({
@@ -94,25 +109,60 @@ async function createDeliveryRideForOrder(order, store, io) {
   const existing = await Ride.findOne({ order: order._id });
   if (existing) return existing;
 
-  const pLng = lng(store.address && store.address.coordinates);
-  const pLat = lat(store.address && store.address.coordinates);
+  let pLng = lng(store.address && store.address.coordinates);
+  let pLat = lat(store.address && store.address.coordinates);
   const dLng = lng(order.deliveryAddress && order.deliveryAddress.coordinates);
   const dLat = lat(order.deliveryAddress && order.deliveryAddress.coordinates);
 
-  const distanceKm = haversineKm(pLat, pLng, dLat, dLng);
-  const fareCalc = calculateFare('delivery', distanceKm);
+  // No page has ever asked a shop for its GPS, so every store sits at the schema
+  // default [0,0] — a point in the Atlantic off Africa. Measured from there a
+  // 6 km delivery came out as 8148 km and 203,808 HTG, and the search for a
+  // driver "within 15 km of the shop" looked in the ocean and found nobody,
+  // with a rider standing 6 km away. Never price or dispatch from [0,0].
+  const hasShopPin = isRealPin(pLng, pLat);
+  const hasCustomerPin = isRealPin(dLng, dLat);
+
+  let distanceKm = 0;
+  let fareCalc;
+  if (hasShopPin && hasCustomerPin) {
+    distanceKm = haversineKm(pLat, pLng, dLat, dLng);
+    fareCalc = calculateFare('delivery', distanceKm);
+  } else {
+    // Fall back to the price the customer was actually quoted and charged at
+    // checkout rather than inventing one from a distance we do not have.
+    console.warn('Dispatch for order ' + order.orderNumber + ': shop has no GPS' +
+      (hasCustomerPin ? '' : ' and neither has the customer') +
+      ' - using the quoted delivery fee instead of a distance.');
+    fareCalc = fareFromQuote(order.deliveryFee);
+    // Look for a driver near the customer instead of near a shop we cannot place.
+    if (!hasShopPin && hasCustomerPin) {
+      pLng = dLng;
+      pLat = dLat;
+    }
+  }
 
   const pin = String(Math.floor(1000 + Math.random() * 9000));
 
-  const ride = await Ride.create({
+  // routes/orders.js stores `recipient: null` on every ordinary (non-diaspora)
+  // order. `recipient` is a NESTED PATH, so mongoose hands back a truthy wrapper
+  // for it even then — `order.recipient || undefined` keeps the null, Ride
+  // validation rejects it, and the whole dispatch throws into a catch that only
+  // logs. The order still went to "ready", so nothing looked wrong. Rebuild it
+  // as a plain object, or leave the key out altogether.
+  const rcp = order.recipient && order.recipient.name
+    ? { name: order.recipient.name, phone: order.recipient.phone, address: order.recipient.address }
+    : null;
+
+  const ride = await Ride.create(Object.assign({
     type: 'delivery',
     customer: order.customer,
     order: order._id,
     store: store._id,
-    recipient: order.recipient || undefined,
     pickup: {
       address: (store.address && store.address.street) || store.name,
-      coordinates: (store.address && store.address.coordinates) || { type: 'Point', coordinates: [pLng, pLat] },
+      // pLng/pLat, not store.address.coordinates: for a shop with no GPS those
+      // are [0,0], and offerToNextDriver searches around exactly this point.
+      coordinates: { type: 'Point', coordinates: [pLng, pLat] },
       notes: 'Ranmase komann #' + order.orderNumber
     },
     dropoff: {
@@ -128,7 +178,7 @@ async function createDeliveryRideForOrder(order, store, io) {
     pin: pin,
     attemptedDrivers: [],
     dispatchAttempts: 0
-  });
+  }, rcp ? { recipient: rcp } : {}));
 
   // Stamp the tracking + pin back on the order for the customer/store views
   order.rideId = ride._id;

@@ -65,13 +65,16 @@ router.post('/', protect, [
     // Calculate fare
     const fareCalc = calculateFare(type, distanceKm || 5);
 
+    // `recipient` is a nested path on Ride, and mongoose refuses to cast null
+    // into one — so writing `recipient || null` made every request without a
+    // named recipient fail validation. Leave the key out instead.
     const ride = await Ride.create({
       type,
       customer: req.user._id,
       pickup,
       dropoff,
       items: items || [],
-      recipient: recipient || null,
+      ...(recipient && recipient.name ? { recipient } : {}),
       distanceKm: distanceKm || 5,
       fare: {
         total: fareCalc.totalFare,
@@ -246,6 +249,22 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
     if (status === 'delivered') {
       ride.deliveredAt = new Date();
       ride.paymentStatus = 'paid';
+
+      // The shop order this ride was dispatched for finishes with it. Without
+      // this the goods were in the customer's hands while the order sat at
+      // "ready", the tracking page never completed and the shop was never
+      // credited for the sale.
+      if (ride.order) {
+        try {
+          const Order = require('../models/Order');
+          const shopOrder = await Order.findById(ride.order);
+          if (shopOrder) {
+            await require('../services/completeOrder').markOrderDelivered(shopOrder);
+          }
+        } catch (e) {
+          console.error('Closing the shop order for ride ' + ride._id + ' failed:', e.message);
+        }
+      }
 
       // Update driver stats
       const updateField = ride.type === 'delivery' ? 'totalDeliveries' : 'totalRides';

@@ -39,6 +39,86 @@ async function verifySolutionIPPayment(referenceId) {
   return response.json();
 }
 
+// ─── Shop order: confirm the money actually arrived ───
+// POST /api/payments/order/verify   { orderId }
+//
+// The shopper is sent to the MonCash/NatCash page and comes back. Until now
+// nothing told the API about it: checkout.html verified with the gateway in the
+// browser and then just drew its success screen, so EVERY marketplace sale sat
+// at paymentStatus "pending" for ever. Nothing credited the shop when the order
+// was delivered, no order was ever eligible for payout, and the dashboard's
+// revenue read zero.
+//
+// The browser is not allowed to declare an order paid — we ask the gateway
+// ourselves, from here, and check the amount matches before touching anything.
+router.post('/order/verify', protect, async (req, res) => {
+  try {
+    const Order = require('../models/Order');
+    const order = await Order.findById(req.body.orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (order.customer.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Not your order' });
+    }
+    if (order.paymentStatus === 'paid') {
+      return res.json({ success: true, alreadyPaid: true, paymentStatus: 'paid' });
+    }
+
+    const result = await verifySolutionIPPayment(order.orderNumber);
+    if (!result || result.status !== true || result.trans_status !== 'ok') {
+      return res.status(400).json({
+        success: false,
+        paymentStatus: order.paymentStatus,
+        message: (result && result.message) || 'Payment not confirmed by the gateway'
+      });
+    }
+
+    // Never mark an order paid on a smaller payment than the order is worth.
+    const paid = Number(result.montant);
+    if (isFinite(paid) && paid > 0 && paid + 1 < order.total) {
+      console.warn('Order ' + order.orderNumber + ': gateway reports ' + paid +
+        ' but the order is ' + order.total);
+      return res.status(400).json({
+        success: false,
+        message: 'The amount paid does not match this order'
+      });
+    }
+
+    order.paymentStatus = 'paid';
+    order.paidAt = new Date();
+    await order.save();
+
+    // The order already opened a pending payment transaction when it was
+    // placed. Complete that one — a second row would show the shopper the same
+    // payment twice in their history.
+    const pending = await Transaction.findOne({
+      reference: order.orderNumber, type: 'payment', status: 'pending'
+    });
+    if (pending) {
+      pending.status = 'completed';
+      pending.method = result.method || pending.method;
+      await pending.save();
+    } else {
+      await Transaction.create({
+        user: order.customer,
+        type: 'payment',
+        amount: order.total,
+        currency: 'HTG',
+        method: order.paymentMethod || 'moncash',
+        status: 'completed',
+        reference: order.orderNumber,
+        description: 'Payment for order ' + order.orderNumber
+      });
+    }
+
+    res.json({ success: true, paymentStatus: 'paid', orderNumber: order.orderNumber });
+  } catch (error) {
+    console.error('Order payment verify error:', error);
+    res.status(500).json({ success: false, message: 'Verification failed' });
+  }
+});
+
 // ─── MonCash: Create Payment (wallet top-up) ───
 // POST /api/payments/moncash/topup
 router.post('/moncash/topup', protect, async (req, res) => {
