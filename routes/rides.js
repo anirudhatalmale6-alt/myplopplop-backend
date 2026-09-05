@@ -7,6 +7,7 @@ const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const { calculateFare } = require('../utils/fareCalculator');
 const { sendPushToUser } = require('./notifications');
+const referralService = require('../services/referral');
 
 const router = express.Router();
 
@@ -124,6 +125,38 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
     if (ride.status !== 'requested') {
       return res.status(400).json({ success: false, message: 'Ride already taken' });
     }
+
+    /* Is this driver allowed to take THIS kind of job?
+     *
+     * Being role:'driver' was the only thing checked here. That is not the same
+     * question. It meant a driver whose application was still pending - or had
+     * been rejected outright - could accept a real passenger and a real
+     * delivery; and it meant somebody approved only to carry parcels could
+     * accept a person, and somebody approved only to carry passengers could
+     * take a shop's delivery. The two pools are supposed to be separate, and
+     * the approval is supposed to mean something.
+     */
+    const myProfile = await DriverProfile.findOne({ user: req.user._id });
+    if (!myProfile) {
+      return res.status(403).json({ success: false, message: 'No driver profile' });
+    }
+    if (myProfile.status !== 'approved') {
+      return res.status(403).json({
+        success: false,
+        message: myProfile.status === 'pending'
+          ? 'Your driver application has not been approved yet'
+          : 'Your driver account is ' + myProfile.status
+      });
+    }
+    if ((myProfile.services || []).indexOf(ride.type) === -1) {
+      return res.status(403).json({
+        success: false,
+        message: ride.type === 'ride'
+          ? 'You are registered for deliveries, not for carrying passengers'
+          : 'You are registered for passenger rides, not for deliveries'
+      });
+    }
+
     // For auto-dispatched deliveries, only the driver currently being offered the
     // job may accept, and only before the 30s window closes.
     if (ride.offeredTo) {
@@ -338,6 +371,25 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
           }
         }
       }
+
+      /* LajanMaker: the agent who recruited this DRIVER earns a share of the
+         platform's cut of the fare. This is separate from the old ambassador
+         bonus above, which is driver-refers-driver, runs for 3 months and is
+         capped at 500 HTG - a different scheme with a different window that
+         nobody should confuse with the agent programme.
+
+         Keyed on the ride id, so re-sending "delivered" cannot pay twice. */
+      const agentCut = await referralService.payCommissionForUser(req.user._id, {
+        platform: 'myplopplop',
+        serviceType: ride.type === 'delivery' ? 'delivery' : 'ride',
+        amount: ride.fare.total,
+        transactionId: String(ride._id),
+        description: (ride.type === 'delivery' ? 'Delivery ' : 'Ride ') + ride._id
+      });
+      if (agentCut.commissioned) {
+        console.log('Agent ' + agentCut.koutyeCode + ' earned ' + agentCut.amount +
+          ' HTG on ' + ride.type + ' ' + ride._id);
+      }
     }
     if (status === 'cancelled') {
       ride.cancelledAt = new Date();
@@ -465,9 +517,25 @@ router.get('/', protect, async (req, res) => {
 });
 
 // GET /api/rides/available - Available rides for drivers
+//
+// Only jobs this driver is actually approved to do. It used to list every open
+// job on the platform to anybody with role:'driver', so a delivery rider was
+// shown passengers waiting and a driver still awaiting approval was shown
+// everything.
 router.get('/available', protect, authorize('driver'), async (req, res) => {
   try {
-    const rides = await Ride.find({ status: 'requested' })
+    const myProfile = await DriverProfile.findOne({ user: req.user._id });
+    if (!myProfile || myProfile.status !== 'approved') {
+      return res.json({
+        success: true, count: 0, rides: [],
+        message: 'Your driver application has not been approved yet'
+      });
+    }
+
+    const rides = await Ride.find({
+      status: 'requested',
+      type: { $in: myProfile.services && myProfile.services.length ? myProfile.services : ['delivery'] }
+    })
       .populate('customer', 'name phone')
       .sort({ createdAt: -1 })
       .limit(50);

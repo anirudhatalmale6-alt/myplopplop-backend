@@ -8,18 +8,15 @@ const KoutyePayout = require('../models/KoutyePayout');
 const KoutyeWallet = require('../models/KoutyeWallet');
 const ParenajSignup = require('../models/ParenajSignup');
 const User = require('../models/User');
+const referralService = require('../services/referral');
 
-const COMMISSION_WINDOW_DAYS = 365;
 const MIN_PAYOUT_HTG = 500;
 
-const COMMISSION_RATES = {
-  '48hoursready': { rate: 0.10, type: 'percentage', label: '10% on packages' },
-  'msouwout': { rate: 0.10, type: 'percentage', label: 'Recurring up to 12 months' },
-  'myplopplop': { rate: 0.10, type: 'percentage', label: 'Recurring up to 12 months' },
-  'utility': { rate: 0.05, type: 'per_transaction', label: 'Per transaction' },
-  'sol': { rate: 0.03, type: 'per_activity', label: 'Per group/activity' },
-  'prolakay': { rate: 0.10, type: 'percentage', label: 'Per referral' }
-};
+// The 12-month window and the per-platform rates are defined once, in
+// services/referral.js, because the sign-up forms and this route both create
+// referrals and two copies of the number would eventually disagree.
+const COMMISSION_WINDOW_DAYS = referralService.REFERRAL_WINDOW_DAYS;
+const COMMISSION_RATES = referralService.COMMISSION_RATES;
 
 function generateKoutyeCode(name) {
   const clean = (name || 'KOUTYE').replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase();
@@ -207,7 +204,18 @@ router.get('/referrals', protect, async (req, res) => {
 });
 
 // POST /api/koutye/referrals/track - Record a new referral
-router.post('/referrals/track', async (req, res) => {
+//
+// This route had NO authentication and took `userId` straight from the body.
+// Anyone at all could therefore attach any agent code to any real account on
+// the platform and start earning commission on a stranger's shop - and because
+// the referral is what the payout engine reads, that is real money. It now
+// requires a logged-in caller, who may only attach a referral to HIMSELF;
+// an admin may still do it on someone's behalf from the console.
+//
+// The work itself is done by services/referral.js, which is the same code path
+// the sign-up forms use, so there is one definition of a referral and one
+// 12-month window rather than two that can drift apart.
+router.post('/referrals/track', protect, async (req, res) => {
   try {
     const { koutyeCode, platform, entityType, entityName, entityPhone, entityEmail, userId } = req.body;
 
@@ -215,65 +223,47 @@ router.post('/referrals/track', async (req, res) => {
       return res.status(400).json({ success: false, message: 'koutyeCode and platform required' });
     }
 
-    const koutye = await Koutye.findOne({ koutyeCode, status: 'active' });
-    if (!koutye) {
-      return res.status(404).json({ success: false, message: 'Invalid or inactive Koutye code' });
-    }
-
-    if (!COMMISSION_RATES[platform]) {
-      return res.status(400).json({ success: false, message: 'Invalid platform' });
-    }
-
-    if (userId) {
-      const existingRef = await KoutyeReferral.findOne({
-        koutye: koutye._id,
-        'referredEntity.userId': userId,
-        platform
+    const target = userId || String(req.user._id);
+    if (String(target) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only record a referral for your own account'
       });
-      if (existingRef) {
-        return res.status(400).json({ success: false, message: 'Referral already exists for this user on this platform' });
-      }
     }
 
-    const rate = COMMISSION_RATES[platform];
-    const startDate = new Date();
-    const expiryDate = new Date(startDate);
-    expiryDate.setDate(expiryDate.getDate() + COMMISSION_WINDOW_DAYS);
-
-    const referral = await KoutyeReferral.create({
-      koutye: koutye._id,
-      koutyeCode,
-      platform,
-      referredEntity: {
-        type: entityType || 'customer',
-        name: entityName,
-        phone: entityPhone,
-        email: entityEmail,
-        userId: userId || undefined
-      },
-      commissionRate: rate.rate,
-      commissionType: rate.type,
-      startDate,
-      expiryDate,
-      sourceDescription: rate.label
+    const result = await referralService.attachReferral({
+      code: koutyeCode,
+      platform: platform,
+      entityType: entityType,
+      user: target,
+      name: entityName,
+      phone: entityPhone,
+      email: entityEmail
     });
 
-    koutye.stats.totalReferrals += 1;
-    koutye.stats.activeReferrals += 1;
-    const pb = koutye.platformBreakdown[platform];
-    if (pb) pb.referrals += 1;
-    koutye.updateTier();
-    await koutye.save();
+    if (!result.attached) {
+      const status = result.reason === 'unknown_code' || result.reason === 'inactive_agent' ? 404 : 400;
+      return res.status(status).json({ success: false, reason: result.reason, message: {
+        no_code: 'koutyeCode required',
+        unknown_code: 'Invalid Koutye code',
+        inactive_agent: 'That Koutye is not active',
+        self_referral: 'An agent cannot refer himself',
+        already_referred: 'This account already has a referring agent on this platform',
+        bad_platform: 'Invalid platform',
+        error: 'Server error'
+      }[result.reason] || 'Referral not recorded' });
+    }
 
+    const referral = result.referral;
     res.status(201).json({
       success: true,
       data: {
         referralId: referral._id,
-        platform,
-        commissionRate: rate.rate,
-        commissionType: rate.type,
-        expiryDate,
-        daysValid: COMMISSION_WINDOW_DAYS
+        platform: referral.platform,
+        commissionRate: referral.commissionRate,
+        commissionType: referral.commissionType,
+        expiryDate: referral.expiryDate,
+        daysValid: referralService.REFERRAL_WINDOW_DAYS
       }
     });
   } catch (err) {

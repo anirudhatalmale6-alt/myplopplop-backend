@@ -4,6 +4,7 @@ const { protect } = require('../middleware/auth');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const Ride = require('../models/Ride');
+const referralService = require('../services/referral');
 
 // SolutionIP (Pey'M PlopPlop) payment gateway
 const SOLUTIONIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
@@ -110,6 +111,38 @@ router.post('/order/verify', protect, async (req, res) => {
         reference: order.orderNumber,
         description: 'Payment for order ' + order.orderNumber
       });
+    }
+
+    /* The LajanMaker agent earns his share now that the money is genuinely in.
+       Nothing on the order path used to do this at all, so an agent could sign
+       up a shop that traded every day and never see a gourde.
+
+       Paid to the agent who signed up the SHOP, not the shopper. A sale
+       generates one platform fee and it is shared once; the shop is what the
+       agent recruited and what keeps earning. The customer's own agent is still
+       recorded against them - say the word and a customer's agent can be paid
+       instead of, or as well as, the shop's.
+
+       Keyed on the order number, so re-verifying a paid order cannot pay twice. */
+    try {
+      const Store = require('../models/Store');
+      const shop = await Store.findById(order.store).select('owner name');
+      if (shop && shop.owner) {
+        const commission = await referralService.payCommissionForUser(shop.owner, {
+          platform: 'myplopplop',
+          serviceType: 'marketplace',
+          amount: order.total,
+          transactionId: order.orderNumber,
+          description: 'Order ' + order.orderNumber + ' at ' + shop.name
+        });
+        if (commission.commissioned) {
+          console.log('Agent ' + commission.koutyeCode + ' earned ' + commission.amount +
+            ' HTG on order ' + order.orderNumber);
+        }
+      }
+    } catch (e) {
+      // A commission must never be able to un-pay somebody's order.
+      console.error('Commission on order ' + order.orderNumber + ' failed:', e.message);
     }
 
     res.json({ success: true, paymentStatus: 'paid', orderNumber: order.orderNumber });

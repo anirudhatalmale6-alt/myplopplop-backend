@@ -5,6 +5,10 @@ const Ride = require('../models/Ride');
 const Transaction = require('../models/Transaction');
 const Order = require('../models/Order');
 const Store = require('../models/Store');
+const KoutyeCommission = require('../models/KoutyeCommission');
+const KoutyeReferral = require('../models/KoutyeReferral');
+const ActivityLog = require('../models/ActivityLog');
+const activity = require('../services/activity');
 const { protect, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -54,15 +58,34 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// GET /api/admin/drivers - List all driver applications
+// GET /api/admin/drivers - List driver applications
+//
+// ?service=delivery returns MyPlopPlop delivery drivers only, ?service=ride
+// returns passenger drivers only. The two are separate queues on purpose:
+// approving somebody to carry parcels is not the same decision as approving
+// them to carry a person, and they should not appear in one another's list.
 router.get('/drivers', async (req, res) => {
   try {
-    const { status = 'pending' } = req.query;
-    const drivers = await DriverProfile.find({ status })
+    const { status = 'pending', service } = req.query;
+    const query = { status };
+    if (service === 'delivery' || service === 'ride') query.services = service;
+
+    const drivers = await DriverProfile.find(query)
       .populate('user', 'name phone email')
       .sort({ createdAt: -1 });
 
-    res.json({ success: true, count: drivers.length, drivers });
+    // So the screen can show both counts without asking twice.
+    const [pendingDelivery, pendingRide] = await Promise.all([
+      DriverProfile.countDocuments({ status: 'pending', services: 'delivery' }),
+      DriverProfile.countDocuments({ status: 'pending', services: 'ride' })
+    ]);
+
+    res.json({
+      success: true,
+      count: drivers.length,
+      drivers,
+      pending: { delivery: pendingDelivery, ride: pendingRide }
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -94,6 +117,14 @@ router.put('/drivers/:id/verify', async (req, res) => {
     }
 
     await profile.save();
+
+    activity.record(req, 'driver.' + action, {
+      targetType: 'DriverProfile',
+      targetId: profile._id,
+      targetLabel: profile.vehiclePlate,
+      detail: { driverType: profile.driverType, reason: reason || undefined }
+    });
+
     res.json({ success: true, profile });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -222,7 +253,89 @@ router.patch('/stores/:id', async (req, res) => {
     }
 
     await store.save();
+
+    activity.record(req, 'store.' + (action || 'update'), {
+      targetType: 'Store',
+      targetId: store._id,
+      targetLabel: store.name,
+      detail: { status: store.status, isVerified: store.isVerified }
+    });
+
     res.json({ success: true, data: store });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/admin/commissions - what the LajanMaker agents have earned
+//
+// The agent engine kept its own ledger, but the owner's console had no way to
+// read it, so there was no screen anywhere that answered "which agent brought
+// this merchant, and what are we paying him".
+router.get('/commissions', async (req, res) => {
+  try {
+    const { page = 1, limit = 50, koutyeCode } = req.query;
+    const query = {};
+    if (koutyeCode) query.koutyeCode = koutyeCode.toUpperCase();
+
+    const [commissions, total, referrals] = await Promise.all([
+      KoutyeCommission.find(query)
+        .populate('koutye', 'koutyeCode tier')
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit)),
+      KoutyeCommission.countDocuments(query),
+      KoutyeReferral.find(koutyeCode ? { koutyeCode: koutyeCode.toUpperCase() } : {})
+        .sort({ createdAt: -1 })
+        .limit(200)
+    ]);
+
+    const now = new Date();
+    const paidOut = await KoutyeCommission.aggregate([
+      { $group: { _id: '$status', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      commissions,
+      byStatus: paidOut,
+      referrals: referrals.map(function (r) {
+        return {
+          id: r._id,
+          koutyeCode: r.koutyeCode,
+          platform: r.platform,
+          entity: r.referredEntity,
+          // A referral past its 12 months is expired whether or not anything
+          // has got round to changing the stored status yet.
+          status: (r.status === 'active' && r.expiryDate < now) ? 'expired' : r.status,
+          startDate: r.startDate,
+          expiryDate: r.expiryDate,
+          daysRemaining: Math.max(0, Math.ceil((r.expiryDate - now) / 86400000)),
+          earned: r.totalCommissionEarned
+        };
+      })
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/admin/activity - the audit trail
+router.get('/activity', async (req, res) => {
+  try {
+    const { page = 1, limit = 100, action, targetType } = req.query;
+    const query = {};
+    if (action) query.action = action;
+    if (targetType) query.targetType = targetType;
+
+    const logs = await ActivityLog.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+
+    const total = await ActivityLog.countDocuments(query);
+    res.json({ success: true, count: logs.length, total, logs });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

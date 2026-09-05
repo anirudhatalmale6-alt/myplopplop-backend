@@ -302,7 +302,14 @@ router.post('/payout/send', protect, authorize('admin'), async (req, res) => {
 
 // ─── Record commission from any platform transaction ───
 // POST /api/koutye-payments/commission/trigger
-router.post('/commission/trigger', async (req, res) => {
+//
+// This had no authentication. Anyone who knew an agent's code - and the codes
+// are handed out on flyers - could post to it repeatedly and mint commission
+// rows out of nothing, which the payout run then turns into real money. It is
+// now admin-only. Ordinary commissions are not earned here at all: the order
+// and ride paths pay the right agent automatically through
+// services/referral.js, keyed on the person who actually traded.
+router.post('/commission/trigger', protect, authorize('admin'), async (req, res) => {
   try {
     const { koutyeCode, platform, transactionAmount, transactionId, serviceType, description } = req.body;
 

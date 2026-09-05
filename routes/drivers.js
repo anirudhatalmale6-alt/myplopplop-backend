@@ -4,8 +4,43 @@ const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const upload = require('../middleware/upload');
 const { notifySignup } = require('../utils/notify');
+const { attachReferral } = require('../services/referral');
 
 const router = express.Router();
+
+const VALID_SERVICES = ['delivery', 'ride'];
+
+/* What kind of driver is signing up.
+
+   This arrives from a multipart form, so it can be a JSON array from one page
+   ('["delivery"]'), a plain word from another ('delivery'), or the same field
+   sent twice, which multer hands over as a real array. The old line was
+   JSON.parse(services) with no guard: a form that sent the plain word threw
+   SyntaxError into the outer catch, and the driver got "500 Server error" with
+   no profile created and no clue why.
+
+   Anything unrecognised falls back to delivery, because this endpoint is
+   reached from myplopplop.com, and MyPlopPlop is deliveries. */
+function parseServices(raw) {
+  var list = [];
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (typeof raw === 'string' && raw.trim()) {
+    var s = raw.trim();
+    if (s.charAt(0) === '[') {
+      try { list = JSON.parse(s); } catch (e) { list = s.split(','); }
+    } else {
+      list = s.split(',');
+    }
+  }
+  list = (list || [])
+    .map(function (v) { return String(v).trim().toLowerCase(); })
+    .filter(function (v) { return VALID_SERVICES.indexOf(v) !== -1; });
+
+  // de-duplicate, keep a stable order
+  var out = VALID_SERVICES.filter(function (v) { return list.indexOf(v) !== -1; });
+  return out.length ? out : ['delivery'];
+}
 
 // POST /api/drivers/onboard - Driver submits application
 router.post('/onboard', protect, upload.fields([
@@ -32,6 +67,8 @@ router.post('/onboard', protect, upload.fields([
       }
     }
 
+    const wanted = parseServices(services);
+
     const profile = await DriverProfile.create({
       user: req.user._id,
       vehicleType,
@@ -39,7 +76,7 @@ router.post('/onboard', protect, upload.fields([
       vehicleModel,
       vehicleColor,
       licenseNumber,
-      services: services ? JSON.parse(services) : ['delivery'],
+      services: wanted,
       licensePhoto: req.files?.licensePhoto?.[0]?.path,
       insurancePhoto: req.files?.insurancePhoto?.[0]?.path,
       vehiclePhoto: req.files?.vehiclePhoto?.[0]?.path,
@@ -49,12 +86,34 @@ router.post('/onboard', protect, upload.fields([
     // Update user role to driver
     await User.findByIdAndUpdate(req.user._id, { role: 'driver' });
 
+    // Credit the LajanMaker agent who recruited this driver, same 12-month
+    // window as a customer or a merchant.
+    const agentCode = req.body.koutyeCode || req.body.agentCode || req.body.ref;
+    const refResult = await attachReferral({
+      code: agentCode,
+      platform: 'myplopplop',
+      entityType: 'driver',
+      user: req.user._id,
+      name: req.user.name,
+      phone: req.user.phone,
+      source: 'Driver registration (' + wanted.join('+') + ')'
+    });
+    if (agentCode && !refResult.attached) {
+      console.warn('Driver ' + req.user.phone + ' carried agent code "' + agentCode +
+        '" but it was not attached: ' + refResult.reason);
+    }
+
     notifySignup('driver', {
       name: req.user.name, phone: req.user.phone,
-      vehicleType, plate: vehiclePlate
+      vehicleType, plate: vehiclePlate,
+      driverType: profile.driverType
     }).catch(() => {});
 
-    res.status(201).json({ success: true, profile });
+    res.status(201).json({
+      success: true,
+      profile,
+      referredByAgent: refResult.attached ? refResult.referral.koutyeCode : null
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

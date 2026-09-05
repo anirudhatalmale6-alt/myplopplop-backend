@@ -43,7 +43,17 @@ const driverProfileSchema = new mongoose.Schema({
   verifiedAt: Date,
   rejectionReason: String,
 
-  // Service types this driver offers
+  // Service types this driver offers.
+  //
+  // This one array is what separates a MyPlopPlop delivery driver from a
+  // passenger driver, and it is deliberately the ONLY thing that does. The
+  // dispatch engine already searches on `services: 'delivery'`, so a second
+  // "driverType" column would be a copy of this that could quietly disagree
+  // with it - and a driver who disagreed with himself would either be offered
+  // work he is not approved for, or none at all.
+  //
+  // A driver who registers on myplopplop.com to deliver parcels gets exactly
+  // ['delivery'] and appears only in the delivery approval queue.
   services: [{
     type: String,
     enum: ['delivery', 'ride']
@@ -84,10 +94,25 @@ driverProfileSchema.virtual('grade').get(function() {
   return { tier: 'New', badge: 'green', color: '#10b981' };
 });
 
+// What kind of driver this is, in one word, for the admin lists and screens.
+// Read from `services` rather than stored, so it can never disagree with the
+// array the dispatch engine actually searches on.
+driverProfileSchema.virtual('driverType').get(function() {
+  var s = this.services || [];
+  var d = s.indexOf('delivery') !== -1;
+  var r = s.indexOf('ride') !== -1;
+  if (d && r) return 'both';
+  if (r) return 'ride';
+  return 'delivery';
+});
+
 driverProfileSchema.set('toJSON', { virtuals: true });
 driverProfileSchema.set('toObject', { virtuals: true });
 
 driverProfileSchema.index({ currentLocation: '2dsphere' });
 driverProfileSchema.index({ status: 1, isOnline: 1 });
+// The admin approval queues read "pending delivery drivers" / "pending ride
+// drivers", which is this index.
+driverProfileSchema.index({ services: 1, status: 1 });
 
 module.exports = mongoose.model('DriverProfile', driverProfileSchema);

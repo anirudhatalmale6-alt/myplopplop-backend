@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { protect } = require('../middleware/auth');
 const { notifySignup } = require('../utils/notify');
+const { attachReferral } = require('../services/referral');
 
 const router = express.Router();
 
@@ -13,6 +14,18 @@ const router = express.Router();
 // and approves drivers. Admin is granted from the console instead
 // (POST /api/admin-pin/grant-admin), never asked for.
 const PUBLIC_ROLES = ['customer', 'merchant', 'driver'];
+
+/* Which display language to store.
+   Kreyol is written 'kr' on the marketplace pages and 'ht' on the driver
+   pages; they are the same language, so both are folded to 'kr'. Anything we
+   do not recognise becomes French rather than an error - somebody's account
+   must never fail to be created because of the language their phone is in. */
+const LANGUAGES = ['fr', 'en', 'kr', 'es', 'pt'];
+function safeLanguage(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (v === 'ht' || v === 'ht-ht' || v === 'cr') return 'kr';
+  return LANGUAGES.indexOf(v) !== -1 ? v : 'fr';
+}
 
 // POST /api/auth/register
 // Accepts either 'password' or 'pin' field (frontend uses 4-digit PIN)
@@ -66,12 +79,32 @@ router.post('/register', [
     const user = await User.create({
       name, phone, email, password,
       role: safeRole,
-      language: language || 'fr',
+      language: safeLanguage(language),
       isDiaspora: isDiaspora || false,
       country,
       referredBy,
       referredAt: referredBy ? new Date() : undefined
     });
+
+    // The LajanMaker agent who brought this person, if they arrived on an
+    // agent's link. Every sign-up form on the platform used to accept a code
+    // like this and quietly drop it, so no agent was ever credited for a
+    // customer or a merchant. Never let a bad code fail a registration.
+    const agentCode = req.body.koutyeCode || req.body.agentCode || req.body.ref;
+    const referral = await attachReferral({
+      code: agentCode,
+      platform: 'myplopplop',
+      entityType: safeRole === 'merchant' ? 'merchant' : 'customer',
+      user: user._id,
+      name: user.name,
+      phone: user.phone,
+      email: user.email,
+      source: 'Sign-up on myplopplop.com'
+    });
+    if (agentCode && !referral.attached) {
+      console.warn('Sign-up ' + phone + ' carried agent code "' + agentCode +
+        '" but it was not attached: ' + referral.reason);
+    }
 
     notifySignup(safeRole === 'merchant' ? 'merchant' : 'user', {
       name, phone, email, role: safeRole
@@ -90,7 +123,10 @@ router.post('/register', [
         language: user.language,
         wallet: user.wallet,
         referralCode: user.referralCode
-      }
+      },
+      // So the sign-up screen can say "Ou enskri ak ajan KB-XXX" instead of
+      // leaving the agent and the customer both guessing.
+      referredByAgent: referral.attached ? referral.referral.koutyeCode : null
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

@@ -5,6 +5,7 @@ const Store = require('../models/Store');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const { protect, authorize } = require('../middleware/auth');
+const referralService = require('../services/referral');
 
 // ─── GET ALL ACTIVE STORES (public) ───
 router.get('/', async function(req, res) {
@@ -110,6 +111,32 @@ router.post('/', protect, [
       isVerified: true, // auto-verify new merchant stores on signup
       referralPartner: req.body.referralPartner || undefined
     });
+
+    // Credit the LajanMaker agent who brought this merchant. A merchant can
+    // arrive two ways - signing up straight from an agent's link, or as an
+    // ordinary customer who opens a shop later - so the code is looked for
+    // here as well as at sign-up. attachReferral() only writes one referral
+    // per person, so doing it in both places cannot pay an agent twice.
+    var agentCode = req.body.koutyeCode || req.body.agentCode || req.body.ref;
+    var refResult = await referralService.attachReferral({
+      code: agentCode,
+      platform: 'myplopplop',
+      entityType: 'merchant',
+      user: req.user._id,
+      name: store.name,
+      phone: store.phone || user.phone,
+      email: store.email || user.email,
+      source: 'Store registration: ' + store.name
+    });
+    // Someone the agent signed up as a customer has now opened a shop. Same
+    // referral, same 12 months - but the report should call them a merchant.
+    if (!refResult.attached && refResult.reason === 'already_referred' && refResult.referral) {
+      if (refResult.referral.referredEntity.type !== 'merchant') {
+        refResult.referral.referredEntity.type = 'merchant';
+        refResult.referral.referredEntity.name = store.name;
+        await refResult.referral.save().catch(function () {});
+      }
+    }
 
     // Tell the office a real store just appeared, with the partner who sent them.
     try {

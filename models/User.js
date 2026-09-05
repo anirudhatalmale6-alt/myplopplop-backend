@@ -39,9 +39,18 @@ const userSchema = new mongoose.Schema({
     enum: ['customer', 'driver', 'merchant']
   },
   avatar: String,
+  // The language switcher on the site offers French, Kreyol, Spanish and
+  // PORTUGUESE, but 'pt' was missing from this list, so mongoose rejected the
+  // document and the whole registration came back as a 500 Server error. A
+  // Brazilian-Haitian who had set the site to Portuguese simply could not
+  // create an account, and nothing said why.
+  //
+  // 'ht' is here because Kreyol is written both ways across the platform - the
+  // driver pages use 'ht', the marketplace uses 'kr'. routes/auth.js folds one
+  // into the other; this accepts either so no future page can 500 over it.
   language: {
     type: String,
-    enum: ['fr', 'en', 'kr', 'es'],
+    enum: ['fr', 'en', 'kr', 'ht', 'es', 'pt'],
     default: 'fr'
   },
   isDiaspora: {
