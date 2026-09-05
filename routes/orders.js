@@ -7,6 +7,7 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const { protect, authorize } = require('../middleware/auth');
+const { calculateFare } = require('../utils/fareCalculator');
 
 // ─── PLACE ORDER ───
 router.post('/', protect, [
@@ -68,7 +69,23 @@ router.post('/', protect, [
       if (store.deliveryOptions.freeDeliveryMin > 0 && subtotal >= store.deliveryOptions.freeDeliveryMin) {
         deliveryFee = 0;
       }
+
+      // Checkout quotes a distance-based delivery price from the customer's GPS
+      // pin (POST /api/rides/quote) and charges exactly that at the gateway. The
+      // order used to record the store's flat fee instead - usually 0 - so the
+      // customer paid for a delivery the books said was free and the rider's 80%
+      // was calculated from nothing. Take the quoted figure, capped at what a
+      // 30 km delivery costs so a tampered page cannot invent a payout.
+      var quoted = Math.round(Number(req.body.deliveryFee));
+      if (isFinite(quoted) && quoted > deliveryFee) {
+        var ceiling = calculateFare('delivery', 30).totalFare;
+        deliveryFee = Math.min(quoted, ceiling);
+      }
     }
+
+    // 5% service fee, the same one checkout shows and charges. Computed here
+    // rather than trusted from the page.
+    var serviceFee = Math.round(subtotal * 0.05);
 
     var commissionRate = store.commissionRate || 10;
     var commission = Math.round(subtotal * commissionRate / 100);
@@ -85,7 +102,7 @@ router.post('/', protect, [
     var deliveryDriverCut = Math.round(deliveryFee * 0.80);
     var deliveryPlatformCut = deliveryFee - deliveryDriverCut;
 
-    var total = subtotal + deliveryFee + diasporaFee;
+    var total = subtotal + deliveryFee + serviceFee + diasporaFee;
 
     // Referral: 10% of platform commission
     var referralBonus = 0;
@@ -132,6 +149,7 @@ router.post('/', protect, [
       deliveryType: req.body.deliveryType || 'delivery',
       deliveryAddress: req.body.deliveryAddress || {},
       deliveryFee: deliveryFee,
+      serviceFee: serviceFee,
       subtotal: subtotal,
       commission: commission,
       diasporaFee: diasporaFee,

@@ -59,6 +59,7 @@ const orderSchema = new mongoose.Schema({
   // Financials
   subtotal: { type: Number, required: true },
   commission: { type: Number, default: 0 }, // platform commission (10%)
+  serviceFee: { type: Number, default: 0 }, // 5% service fee the shopper is shown and charged
   diasporaFee: { type: Number, default: 0 }, // +3-5% for diaspora orders
   total: { type: Number, required: true },
   merchantEarning: { type: Number, default: 0 },
