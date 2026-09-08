@@ -19,9 +19,15 @@ services:
         value: "0.25"
       - key: FRONTEND_URL
         value: https://myplopplop.com
+      # The web-push pair is NOT here any more. This repository is public, so
+      # the private key written here was readable by anyone — and it was the
+      # live one, confirmed by comparing it against what
+      # GET /api/notifications/vapid-key handed out. The pair now lives in the
+      # database (AdminSetting key 'vapid'), like the console code, and that
+      # leaked pair has been replaced.
       - key: VAPID_PUBLIC_KEY
-        value: BN1SE28WVAyfAVPaD978xZ-60fmKAIuvgne68rm3D98ygY53e1W_bLpN0pCAOdRqQLC-AiGxnPTq9EgmfcuIguc
+        sync: false
       - key: VAPID_PRIVATE_KEY
-        value: fWX1XSiB2viQdeEgbMiCMywYEBVlGNlLITERLCyNAa0
+        sync: false
       - key: VAPID_EMAIL
         value: mailto:info@myplopplop.com

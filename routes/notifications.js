@@ -4,18 +4,39 @@ const webpush = require('web-push');
 const { protect } = require('../middleware/auth');
 const PushSubscription = require('../models/PushSubscription');
 
-// Configure VAPID
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-  webpush.setVapidDetails(
-    process.env.VAPID_EMAIL || 'mailto:info@myplopplop.com',
-    process.env.VAPID_PUBLIC_KEY,
-    process.env.VAPID_PRIVATE_KEY
-  );
+const { loadVapid } = require('../utils/vapidKeys');
+
+/* The pair now comes from the database, because render.yaml is public and the
+   private key that was written there was the live one. Configured on first
+   need rather than at require() time — at require() time there is no database
+   connection yet. */
+let vapidReady = null;
+async function configureVapid() {
+  if (!vapidReady) {
+    vapidReady = loadVapid().then(k => {
+      if (k.publicKey && k.privateKey) {
+        webpush.setVapidDetails(
+          process.env.VAPID_EMAIL || 'mailto:info@myplopplop.com',
+          k.publicKey, k.privateKey
+        );
+      }
+      return k;
+    });
+  }
+  return vapidReady;
 }
 
 // GET /api/notifications/vapid-key - Get public VAPID key
-router.get('/vapid-key', (req, res) => {
-  res.json({ success: true, publicKey: process.env.VAPID_PUBLIC_KEY || '' });
+// The phone needs the PUBLIC half to subscribe. It must be the same pair the
+// server signs with, so it is read from the same place rather than from the
+// environment, which may still hold the old one.
+router.get('/vapid-key', async (req, res) => {
+  try {
+    const k = await configureVapid();
+    res.json({ success: true, publicKey: k.publicKey || '' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'key unavailable' });
+  }
 });
 
 // POST /api/notifications/subscribe - Save push subscription
@@ -56,6 +77,7 @@ module.exports = router;
 // Helper: send push to a specific user (used by other routes)
 module.exports.sendPushToUser = async function(userId, title, body, data = {}) {
   try {
+    await configureVapid();   // the pair lives in the database now
     const subs = await PushSubscription.find({ user: userId });
     const payload = JSON.stringify({
       title,
@@ -67,8 +89,13 @@ module.exports.sendPushToUser = async function(userId, title, body, data = {}) {
 
     const results = await Promise.allSettled(
       subs.map(sub => webpush.sendNotification(sub.subscription, payload).catch(err => {
-        // Remove expired subscriptions
-        if (err.statusCode === 410 || err.statusCode === 404) {
+        // Remove subscriptions that can never succeed again:
+        //  410/404 - the browser threw the subscription away
+        //  403     - signed with a different key pair than the one it was made
+        //            with. That is what a key rotation looks like from here,
+        //            and without this line every rotated-out subscription would
+        //            be retried for ever and never work.
+        if (err.statusCode === 410 || err.statusCode === 404 || err.statusCode === 403) {
           PushSubscription.deleteOne({ _id: sub._id }).catch(() => {});
         }
         throw err;
