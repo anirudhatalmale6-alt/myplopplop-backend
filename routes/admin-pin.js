@@ -425,4 +425,167 @@ router.get('/koutye', async (req, res) => {
   }
 });
 
+/* ---------------------------------------------------------------------------
+   Agent sign-ups: the missing link.
+
+   The agent engine has been complete since April — referral tracking, a
+   commission ledger, wallets, payouts, the lot — and on 5 September it was
+   wired into customer, merchant and driver registration and into order and
+   ride payments. What was never built is the step in between.
+
+   The public form at koutye.html writes a ParenajSignup: a name, a phone and a
+   referral code, in a waiting list. attachReferral() looks a code up in the
+   Koutye collection. Nothing ever turned one into the other, so every code a
+   real agent handed out came back "unknown_code" and quietly did nothing. That
+   is why 19 people signed up, handed out links, and not one gourde was ever
+   recorded against any of them.
+
+   ⛔ The code MUST be carried across unchanged. Those codes are already on
+   flyers and in WhatsApp messages; minting a new one would break every link
+   an agent has already sent.
+   --------------------------------------------------------------------------- */
+/* No bcrypt here on purpose: the User model hashes the PIN in its own pre-save
+   hook, so hashing it here would hash it twice and nobody could ever log in. */
+const crypto = require('crypto');
+
+/* GET /api/admin-pin/agent-signups — who is waiting. */
+router.get('/agent-signups', async (req, res) => {
+  try {
+    if (!ParenajSignup) return res.json({ success: true, signups: [], approved: 0 });
+    const status = req.query.status || 'pending';
+    const signups = await ParenajSignup.find(status === 'all' ? {} : { status })
+      .sort({ createdAt: -1 }).limit(500).lean();
+    const approved = Koutye ? await Koutye.countDocuments() : 0;
+    res.json({ success: true, count: signups.length, approved, signups });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* POST /api/admin-pin/agent-signups/:id/approve — make them a real agent.
+ *
+ * Idempotent on purpose: he is doing this on a phone, and a second tap on a
+ * slow connection must not create a second account or a second code. */
+router.post('/agent-signups/:id/approve', async (req, res) => {
+  try {
+    if (!ParenajSignup || !Koutye) {
+      return res.status(500).json({ error: 'agent models are not loaded' });
+    }
+    const signup = await ParenajSignup.findById(req.params.id);
+    if (!signup) return res.status(404).json({ error: 'no such sign-up' });
+
+    /* Already done? Say so and stop — do not build a second one. */
+    const existingByCode = await Koutye.findOne({ koutyeCode: signup.koutyeCode });
+    if (existingByCode) {
+      if (signup.status !== 'approved') {
+        signup.status = 'approved';
+        await signup.save();
+      }
+      return res.json({ success: true, alreadyApproved: true, koutyeCode: signup.koutyeCode });
+    }
+
+    /* An agent needs a login, because every agent screen is behind one. Build
+     * it from the phone number they already gave us so no agent ever has to
+     * invent or remember anything. If a user with that phone already exists,
+     * that person becomes the agent rather than getting a duplicate account. */
+    let user = await User.findOne({ phone: signup.phone });
+    if (!user) {
+      const digits = String(signup.phone).replace(/\D/g, '');
+      if (digits) {
+        user = await User.findOne({
+          phone: new RegExp('^[^0-9]*' + digits.split('').join('[^0-9]*') + '$')
+        });
+      }
+    }
+    let tempPin = null;
+    if (!user) {
+      /* A random PIN, never a predictable one. It is returned ONCE, in this
+       * response, so he can pass it on; it is not stored anywhere in the clear
+       * and cannot be read back afterwards. */
+      tempPin = String(crypto.randomInt(1000, 10000));
+      user = await User.create({
+        name: signup.name,
+        phone: signup.phone,
+        password: tempPin,
+        role: 'customer',
+        language: 'ht'
+      });
+    }
+
+    const koutye = await Koutye.create({
+      user: user._id,
+      koutyeCode: signup.koutyeCode,   // ⛔ unchanged - it is already on flyers
+      status: 'active',
+      whatsapp: signup.phone,
+      payoutMethod: 'moncash',
+      payoutDetails: { phone: signup.phone }
+    });
+
+    signup.status = 'approved';
+    await signup.save();
+
+    res.json({
+      success: true,
+      koutyeCode: koutye.koutyeCode,
+      name: signup.name,
+      phone: signup.phone,
+      tempPin,                          // null when the person already had an account
+      referralLink: 'https://haitibiznis.com/koutye.html?ref=' + koutye.koutyeCode
+    });
+  } catch (err) {
+    /* A duplicate key here means two taps raced. That is a success, not a
+     * failure — the agent exists. */
+    if (err && err.code === 11000) {
+      return res.json({ success: true, alreadyApproved: true });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* POST /api/admin-pin/agent-signups/approve-all — the 19 who are already
+ * waiting, in one go. Reports each one rather than a single number, because
+ * "17 of 19 worked" is the answer he needs, not "done". */
+router.post('/agent-signups/approve-all', async (req, res) => {
+  try {
+    if (!ParenajSignup || !Koutye) {
+      return res.status(500).json({ error: 'agent models are not loaded' });
+    }
+    const pending = await ParenajSignup.find({ status: 'pending' }).sort({ createdAt: 1 }).lean();
+    const done = [], failed = [];
+    for (const s of pending) {
+      try {
+        const existing = await Koutye.findOne({ koutyeCode: s.koutyeCode });
+        if (existing) {
+          await ParenajSignup.updateOne({ _id: s._id }, { $set: { status: 'approved' } });
+          done.push({ code: s.koutyeCode, already: true });
+          continue;
+        }
+        let user = await User.findOne({ phone: s.phone });
+        let tempPin = null;
+        if (!user) {
+          tempPin = String(crypto.randomInt(1000, 10000));
+          user = await User.create({
+            name: s.name, phone: s.phone, password: tempPin,
+            role: 'customer', language: 'ht'
+          });
+        }
+        await Koutye.create({
+          user: user._id, koutyeCode: s.koutyeCode, status: 'active',
+          whatsapp: s.phone, payoutMethod: 'moncash', payoutDetails: { phone: s.phone }
+        });
+        await ParenajSignup.updateOne({ _id: s._id }, { $set: { status: 'approved' } });
+        done.push({ code: s.koutyeCode, name: s.name, tempPin });
+      } catch (e) {
+        failed.push({ code: s.koutyeCode, name: s.name, why: e.message });
+      }
+    }
+    /* `failed` was listed twice here — once as a count and once as the array,
+       and the array silently won. A caller checking `failed === 0` was
+       comparing against []. One name, one meaning. */
+    res.json({ success: true, approved: done.length, failedCount: failed.length, done, failed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
