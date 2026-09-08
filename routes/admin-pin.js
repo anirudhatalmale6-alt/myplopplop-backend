@@ -588,4 +588,71 @@ router.post('/agent-signups/approve-all', async (req, res) => {
   }
 });
 
+/* ---------------------------------------------------------------------------
+   Commissions: the last gate before an agent can be paid.
+
+   A commission is created automatically the moment a referred shop's order is
+   confirmed paid, but it lands as `pending`, and the wallet only counts
+   `validated`/`approved` towards what an agent may withdraw. So without a way
+   to approve one, every agent's balance would climb and none of it would ever
+   become withdrawable — the chain would stop one step short, which is exactly
+   the kind of dead end he is tired of.
+
+   The approve/reject routes already existed but were behind a JWT admin login,
+   which he does not have and cannot get on a phone. These are the same two
+   actions behind the console code he already uses.
+   --------------------------------------------------------------------------- */
+let KoutyeCommission;
+try { KoutyeCommission = require('../models/KoutyeCommission'); } catch (e) { KoutyeCommission = null; }
+
+/* GET /api/admin-pin/commissions?status=pending */
+router.get('/commissions', async (req, res) => {
+  try {
+    if (!KoutyeCommission) return res.json({ success: true, commissions: [] });
+    const status = req.query.status || 'pending';
+    const rows = await KoutyeCommission.find(status === 'all' ? {} : { status })
+      .populate({ path: 'koutye', select: 'koutyeCode user',
+                  populate: { path: 'user', select: 'name phone' } })
+      .sort({ createdAt: -1 }).limit(300).lean();
+    const totals = {};
+    for (const r of rows) totals[r.status] = (totals[r.status] || 0) + (r.amount || 0);
+    res.json({ success: true, count: rows.length, totals, commissions: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* POST /api/admin-pin/commissions/:id/approve — makes it withdrawable.
+   POST /api/admin-pin/commissions/:id/reject  — takes it back off the agent. */
+router.post('/commissions/:id/:action(approve|reject)', async (req, res) => {
+  try {
+    if (!KoutyeCommission || !Koutye) return res.status(500).json({ error: 'models not loaded' });
+    const c = await KoutyeCommission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: 'no such commission' });
+    if (c.status !== 'pending') {
+      /* Idempotent: a second tap on a slow phone is not an error. */
+      return res.json({ success: true, already: c.status, id: c._id });
+    }
+    const approving = req.params.action === 'approve';
+    c.status = approving ? 'approved' : 'rejected';
+    if (approving) c.approvedAt = new Date();
+    await c.save();
+
+    /* Keep the agent's own running totals honest. pendingEarnings drops either
+       way; on a rejection the money leaves totalEarnings as well, or the agent
+       would keep seeing money that was taken back. */
+    const k = await Koutye.findById(c.koutye);
+    if (k && k.stats) {
+      k.stats.pendingEarnings = Math.max(0, (k.stats.pendingEarnings || 0) - (c.amount || 0));
+      if (!approving) {
+        k.stats.totalEarnings = Math.max(0, (k.stats.totalEarnings || 0) - (c.amount || 0));
+      }
+      await k.save();
+    }
+    res.json({ success: true, status: c.status, amount: c.amount, id: c._id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
