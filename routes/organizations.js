@@ -42,6 +42,20 @@ async function storeStats(slug) {
   };
 }
 
+/* Exported so it can be tested on its own rather than re-implemented in a
+   test, which would only prove what I THINK the shape is. */
+function parseDriverRows(j, slug) {
+  const rows = Array.isArray(j) ? j : (j && Array.isArray(j.stats) ? j.stats : null);
+  if (rows) {
+    const want = String(slug).toLowerCase();
+    return rows
+      .filter(x => String(x.partner || '').toLowerCase() === want)
+      .reduce((a, x) => a + (+x.total_registered || +x.count || 0), 0);
+  }
+  if (j && j.total != null) return +j.total;
+  return null;
+}
+
 async function driverStats(slug) {
   /* A short timeout on purpose. The dashboard must still open and show the
      shops even when the rides service is asleep. */
@@ -52,9 +66,14 @@ async function driverStats(slug) {
       { signal: c.signal });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
-    const n = j.total != null ? j.total
-            : (Array.isArray(j.stats) ? j.stats.reduce((a, x) => a + (+x.count || 0), 0) : null);
-    return { reachable: true, count: n == null ? 0 : n, raw: j };
+    /* That endpoint answers with a BARE ARRAY of rows like
+       {partner, total_registered, total_verified, active_drivers, ...} — I
+       checked the live response rather than assuming a shape. Reading it as
+       {total} or {stats} would have quietly reported 0 drivers for a partner
+       that has some, which is worse than an error. */
+    const n = parseDriverRows(j, slug);
+    if (n == null) return { reachable: false, count: null, why: 'unexpected shape' };
+    return { reachable: true, count: n };
   } catch (e) {
     return { reachable: false, count: null, why: e.message };
   } finally {
@@ -156,3 +175,4 @@ router.post('/:slug/status', requirePin, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.parseDriverRows = parseDriverRows;
