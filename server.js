@@ -81,6 +81,8 @@ app.use('/api/drivers', driverRoutes);
 app.use('/api/rides', rideRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin-pin', adminPinRoutes);
+/* Partner organizations: the dashboard built in June, finally given its data. */
+app.use('/api/organizations', require('./routes/organizations'));
 app.use('/api/payments', paymentRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/chat', chatRoutes);
