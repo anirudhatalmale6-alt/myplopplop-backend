@@ -30,14 +30,45 @@ function slugRe(slug) {
   return new RegExp('^' + String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
 }
 
+/* "Can the organization see which member referred each merchant?"
+   The two halves were both being recorded and never joined. A shop carries the
+   ORGANISATION as a string (`referralPartner`), while the individual agent is
+   recorded separately in KoutyeReferral, keyed on the shop OWNER's user id -
+   not on the shop. So the answer was sitting in the database in two pieces.
+   This is the join. */
+async function attachAgents(stores) {
+  const owners = stores.map(s => s.owner).filter(Boolean);
+  if (!owners.length) return stores;
+  let byOwner = {};
+  try {
+    const KoutyeReferral = require('../models/KoutyeReferral');
+    const refs = await KoutyeReferral.find({ 'referredEntity.userId': { $in: owners } })
+      .select('koutyeCode referredEntity.userId createdAt').lean();
+    refs.forEach(r => {
+      const k = String(r.referredEntity && r.referredEntity.userId);
+      /* First agent wins, same rule the engine itself uses. */
+      if (k && !byOwner[k]) byOwner[k] = r.koutyeCode;
+    });
+  } catch (e) {
+    /* An unjoinable agent must never blank the shop list. */
+    return stores;
+  }
+  return stores.map(s => ({ ...s, referredByAgent: byOwner[String(s.owner)] || null }));
+}
+
 async function storeStats(slug) {
   const filter = { referralPartner: slugRe(slug) };
-  const stores = await Store.find(filter)
-    .select('name ownerName phone category location status isVerified createdAt')
+  let stores = await Store.find(filter)
+    .select('name owner ownerName phone category location status isVerified createdAt')
     .sort({ createdAt: -1 }).limit(200).lean();
+  stores = await attachAgents(stores);
+  /* Do not leak the owner's internal id to the browser - it was only needed
+     for the join. */
+  stores = stores.map(({ owner, ...rest }) => rest);
   return {
     count: await Store.countDocuments(filter),
     active: await Store.countDocuments({ ...filter, isVerified: true }),
+    withAgent: stores.filter(s => s.referredByAgent).length,
     stores
   };
 }
@@ -103,6 +134,7 @@ router.post('/:slug/open', async (req, res) => {
       stats: {
         stores: s.count,
         activeStores: s.active,
+        withAgent: s.withAgent,
         drivers: d.count,
         driversReachable: d.reachable
       }
