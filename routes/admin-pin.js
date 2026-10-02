@@ -462,6 +462,92 @@ router.get('/agent-signups', async (req, res) => {
   }
 });
 
+/* ═══ ATTACHING SOMEBODY WHO ALREADY SIGNED UP ═══════════════════════════
+ *
+ * Jeffery, 2 Oct: "Can you please add these people under jennifer!" Five people
+ * Jennifer brought in registered WITHOUT her link, and Dukens has the same
+ * problem. Until now the connection could only ever be made at the moment of
+ * registration, by `?ref=CODE` in the URL — so anybody who signed up first
+ * belonged to nobody, for ever.
+ *
+ * 🔑 This does NOT re-implement referral rules. It finds the person and hands
+ * them to the SAME attachReferral() the sign-up path uses, so every protection
+ * already written stays in force: an unknown code is refused, an inactive agent
+ * is refused, self-referral is refused, and FIRST AGENT WINS — if somebody else
+ * already claimed this person, this says so instead of quietly stealing them.
+ *
+ * ⚠️ The 12-month commission window starts TODAY, not on the day they
+ * registered. That is the honest reading: the agent is credited from the moment
+ * the link is actually made. The response says so, so nobody is surprised.
+ */
+
+/* GET /api/admin-pin/referrals/find?q=... — look someone up to attach.
+   Searches name, phone and email so he can paste whatever he has. */
+router.get('/referrals/find', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 3) return res.json({ people: [] });
+    const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const people = await User.find({ $or: [{ name: rx }, { phone: rx }, { email: rx }] })
+      .select('name phone email createdAt').limit(25).lean();
+
+    /* Say who already belongs to an agent, so he does not try and get refused. */
+    const out = [];
+    for (const u of people) {
+      let claimedBy = null;
+      if (KoutyeReferral) {
+        const r = await KoutyeReferral.findOne({ 'referredEntity.userId': u._id })
+          .select('koutyeCode platform startDate').lean();
+        if (r) claimedBy = { code: r.koutyeCode, platform: r.platform, since: r.startDate };
+      }
+      out.push({ id: u._id, name: u.name, phone: u.phone, email: u.email,
+                 joined: u.createdAt, claimedBy: claimedBy });
+    }
+    res.json({ people: out });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* POST /api/admin-pin/referrals/attach
+   body: { code, userIds: [...], platform }  — attach one or many at once. */
+router.post('/referrals/attach', async (req, res) => {
+  try {
+    const referral = require('../services/referral');
+    const code = String((req.body && req.body.code) || '').trim();
+    const platform = String((req.body && req.body.platform) || 'myplopplop').trim();
+    let ids = (req.body && req.body.userIds) || [];
+    if (!Array.isArray(ids)) ids = [ids];
+    if (!code) return res.status(400).json({ error: 'an agent code is required' });
+    if (!ids.length) return res.status(400).json({ error: 'pick at least one person' });
+
+    const results = [];
+    for (const id of ids) {
+      const u = await User.findById(id).select('name phone email').lean();
+      if (!u) { results.push({ id: id, ok: false, reason: 'no such person' }); continue; }
+      const r = await referral.attachReferral({
+        code: code, platform: platform, user: u._id,
+        name: u.name, phone: u.phone, email: u.email,
+        entityType: 'customer',
+        /* so the ledger shows HOW this one was created */
+        source: 'attached by admin on ' + new Date().toISOString().slice(0, 10)
+      });
+      results.push({
+        id: id, name: u.name, phone: u.phone,
+        ok: !!r.attached, reason: r.reason,
+        claimedBy: r.referral && r.referral.koutyeCode
+      });
+    }
+    const done = results.filter(function (x) { return x.ok; }).length;
+    res.json({
+      attached: done, of: results.length, results: results,
+      note: 'the 12-month commission window starts today, not on the day they registered'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* POST /api/admin-pin/agent-signups/:id/approve — make them a real agent.
  *
  * Idempotent on purpose: he is doing this on a phone, and a second tap on a
