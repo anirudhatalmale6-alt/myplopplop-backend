@@ -13,7 +13,7 @@ const koutyeCommissionSchema = new mongoose.Schema({
   },
   platform: {
     type: String,
-    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay'],
+    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay', 'tikelakay'],
     required: true
   },
   transactionId: {
