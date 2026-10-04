@@ -56,7 +56,11 @@ const koutyeSchema = new mongoose.Schema({
     'myplopplop': { referrals: { type: Number, default: 0 }, earnings: { type: Number, default: 0 } },
     'utility': { referrals: { type: Number, default: 0 }, earnings: { type: Number, default: 0 } },
     'sol': { referrals: { type: Number, default: 0 }, earnings: { type: Number, default: 0 } },
-    'prolakay': { referrals: { type: Number, default: 0 }, earnings: { type: Number, default: 0 } }
+    'prolakay': { referrals: { type: Number, default: 0 }, earnings: { type: Number, default: 0 } },
+    /* Tike Lakay, added 3 Oct 2026. Without this bucket the commission is
+       still written and still paid, but the agent's own dashboard shows
+       nothing against ticket sales - which is the half he would notice. */
+    'tikelakay': { referrals: { type: Number, default: 0 }, earnings: { type: Number, default: 0 } }
   },
   lastPayoutDate: Date,
   suspendedReason: String,
