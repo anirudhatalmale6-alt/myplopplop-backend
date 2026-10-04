@@ -33,7 +33,8 @@ const COMMISSION_RATES = {
   'myplopplop':   { rate: 0.10, type: 'percentage', label: 'Recurring up to 12 months' },
   'utility':      { rate: 0.05, type: 'per_transaction', label: 'Per transaction' },
   'sol':          { rate: 0.03, type: 'per_activity', label: 'Per group/activity' },
-  'prolakay':     { rate: 0.10, type: 'percentage', label: 'Per referral' }
+  'prolakay':     { rate: 0.10, type: 'percentage', label: 'Per referral' },
+  'tikelakay':    { rate: 0.03, type: 'percentage', label: '3% of the ticket price' }
 };
 
 // Agents write their code on paper, on a wall, into a phone with a cracked
@@ -146,13 +147,28 @@ async function activeReferralFor(userId, platform) {
 // What share of a transaction reaches the agent. The agent is paid a share of
 // OUR platform fee, not of the whole sale, so the merchant and the driver are
 // never paid less because a customer arrived on an agent's link.
+/* feeRate   = what the platform keeps out of the transaction
+   koutyeRate = the agent's share OF THAT FEE, never on top of it
+   commission = amount * feeRate * koutyeRate                                  */
 const PLATFORM_FEES = {
   '48hoursready': { feeRate: 1.00, koutyeRate: 0.10, label: '10% of package price' },
-  'msouwout':     { feeRate: 0.25, koutyeRate: 0.10, label: '10% of 25% platform fee' },
+  /* 🚨 3 Oct: this said 0.25 and the real fare split is 20%
+     (services/pricing.js, commission_rate: 0.20). Every ride commission was
+     therefore worked out on a fee that does not exist and the agent was
+     overpaid by a quarter - 8.33 instead of 6.67 on a 333 HTG fare.
+     ⛔ If the fare split ever changes, this number changes with it. */
+  'msouwout':     { feeRate: 0.20, koutyeRate: 0.10, label: '10% of 20% platform fee' },
   'myplopplop':   { feeRate: 0.10, koutyeRate: 0.10, label: '10% of 10% platform fee' },
   'utility':      { feeRate: 0.05, koutyeRate: 0.10, label: '10% of 5% service fee' },
   'sol':          { feeRate: 0.02, koutyeRate: 0.10, label: '10% of 2% cycle fee' },
-  'prolakay':     { feeRate: 0.15, koutyeRate: 0.10, label: '10% of 15% platform fee' }
+  'prolakay':     { feeRate: 0.15, koutyeRate: 0.10, label: '10% of 15% platform fee' },
+  /* Jeffery, 3 Oct: "the agent/referrer receives 3% of the ticket price, but
+     that 3% must come from within our 7.5% service fee - never added as
+     another charge to the buyer."
+     3% of the price out of a 7.5% fee is 40% OF THE FEE: 0.075 * 0.40 = 0.03.
+     ⛔ `amount` MUST be the TICKET PRICE (subtotal), not the 1,075 the buyer
+     pays - billing the buyer's total would pay the agent 32.25 instead of 30. */
+  'tikelakay':    { feeRate: 0.075, koutyeRate: 0.40, label: '3% of the ticket price (40% of the 7.5% fee)' }
 };
 
 /* Pay the agent who introduced THIS person, for something that person just did.
