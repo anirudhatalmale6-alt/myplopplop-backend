@@ -3,6 +3,7 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const referralService = require('../services/referral');
 
 // ─── Get my referral info ───
 // GET /api/referrals/me
@@ -144,6 +145,56 @@ router.get('/admin/stats', protect, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to get stats' });
+  }
+});
+
+
+/* ═══ TIKE LAKAY -> THE COMMISSION ENGINE ═══════════════════════════════════
+   Tickets live in haitibiznis-backend and the agent engine lives here: two
+   services, two databases, so one has to call the other. This is that door,
+   and it is deliberately the only one.
+
+   🔑 Called ONCE PER TICKET, when the ticket is confirmed PAID - never when
+   the order is merely created. An unpaid ticket must never earn anybody
+   anything.
+
+   ⛔ NOT a public endpoint. It writes money into the agent ledger, and the
+   agent codes are printed on flyers, so anybody who could post here could mint
+   commissions. It is locked to a shared key that only the two servers hold.
+   If the key is not configured the door is CLOSED, not open - a missing
+   setting must never become an open till.                                     */
+router.post('/ticket-sale', async (req, res) => {
+  const expected = process.env.INTERNAL_SERVICE_KEY;
+  if (!expected) {
+    console.warn('[TIKELAKAY] refused: INTERNAL_SERVICE_KEY is not configured');
+    return res.status(503).json({ success: false, message: 'Service link not configured' });
+  }
+  const given = req.get('x-internal-key') || '';
+  /* Compared in constant time so the key cannot be guessed a character at a
+     time by measuring how long the answer takes. */
+  const crypto = require('crypto');
+  const a = Buffer.from(String(given));
+  const b = Buffer.from(String(expected));
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  try {
+    const { koutyeCode, phone, name, email, amount, transactionId, description } = req.body || {};
+    const out = await referralService.commissionForTicketSale({
+      koutyeCode, phone, name, email,
+      amount: amount,
+      transactionId: transactionId,
+      serviceType: 'ticket',
+      description: description || 'Tike Lakay ticket'
+    });
+    /* Always 200. The caller is a ticket that has already been paid for; it
+       must log what happened and carry on, never retry in a loop or fail the
+       buyer's confirmation because an agent code was mistyped. */
+    res.json({ success: true, result: out });
+  } catch (err) {
+    console.error('[TIKELAKAY] ticket-sale failed:', err.message);
+    res.json({ success: true, result: { commissioned: false, reason: 'error' } });
   }
 });
 
