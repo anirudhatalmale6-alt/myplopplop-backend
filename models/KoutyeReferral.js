@@ -12,13 +12,17 @@ const koutyeReferralSchema = new mongoose.Schema({
   },
   platform: {
     type: String,
-    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay'],
+    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay', 'tikelakay'],
     required: true
   },
   referredEntity: {
     type: { type: String, enum: ['business', 'driver', 'customer', 'merchant', 'professional'] },
     name: String,
     phone: String,
+    /* A ticket buyer has no account, so the telephone number IS the identity.
+       Stored normalised (last 8 digits) because the same person types it a
+       different way every time. Must match haitibiznis phoneKey(). */
+    phoneKey: String,
     email: String,
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
@@ -63,6 +67,7 @@ koutyeReferralSchema.index({ koutyeCode: 1 });
 koutyeReferralSchema.index({ platform: 1 });
 koutyeReferralSchema.index({ expiryDate: 1 });
 koutyeReferralSchema.index({ 'referredEntity.userId': 1 });
+koutyeReferralSchema.index({ 'referredEntity.phoneKey': 1, platform: 1 });
 
 koutyeReferralSchema.methods.isExpired = function() {
   return new Date() > this.expiryDate;
