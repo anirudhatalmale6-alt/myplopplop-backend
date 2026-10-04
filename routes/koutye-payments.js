@@ -41,15 +41,13 @@ async function verifySolutionIPPayment(referenceId) {
   return response.json();
 }
 
-// Commission rates per platform (based on platform fees, not full amount)
-const PLATFORM_FEES = {
-  '48hoursready': { feeRate: 1.0, koutyeRate: 0.10, label: '10% of package price' },
-  'msouwout': { feeRate: 0.25, koutyeRate: 0.10, label: '10% of 25% platform fee' },
-  'myplopplop': { feeRate: 0.10, koutyeRate: 0.10, label: '10% of 10% platform fee' },
-  'utility': { feeRate: 0.05, koutyeRate: 0.10, label: '10% of 5% service fee' },
-  'sol': { feeRate: 0.02, koutyeRate: 0.10, label: '10% of 2% cycle fee' },
-  'prolakay': { feeRate: 0.15, koutyeRate: 0.10, label: '10% of 15% platform fee' }
-};
+/* 🚨🚨 3 Oct: THIS WAS A SECOND COPY OF THE RATE TABLE, and it had already
+   drifted - it still said msouwout 0.25 while the real split is 20%. Two
+   tables means every future rate change is only half applied, and the half
+   that is missed is money. There is now ONE table, in services/referral.js,
+   which is where the ordinary order and ride paths read it from.
+   ⛔ Do not reintroduce a local copy. */
+const { PLATFORM_FEES } = require('../services/referral');
 
 // ─── 48HoursReady Package Purchase ───
 // POST /api/koutye-payments/package/purchase
