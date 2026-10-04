@@ -28,6 +28,8 @@ async function createSolutionIPPayment(referenceId, amount, paymentMethod) {
   return response.json();
 }
 
+const { gatewayConfirmed } = require('../services/gatewayStatus');
+
 async function verifySolutionIPPayment(referenceId) {
   const response = await fetch(`${SOLUTIONIP_URL}/api/paiement-verify`, {
     method: 'POST',
@@ -198,12 +200,16 @@ router.post('/pay', async (req, res) => {
         payment_method: transaction.payment_method,
         provider_reference: result.transaction_id || '',
         amount: transaction.total_amount,
-        status: (result.trans_status === 'completed' || result.trans_status === 'Completed') ? 'completed' : 'pending',
+        status: gatewayConfirmed(result) ? 'completed' : 'pending',
         raw_response: result,
         webhook_source: 'verify'
       });
 
-      if (result.trans_status === 'completed' || result.trans_status === 'Completed') {
+      /* 🚨 4 Oct: this tested for 'completed'/'Completed'. The gateway sends
+         'ok' - the same endpoint, in the same file, is checked for 'ok'
+         fifty lines below. A utility payment confirmed down this path could
+         never be marked paid. */
+      if (gatewayConfirmed(result)) {
         transaction.payment_status = 'paid';
         transaction.processing_status = 'processing';
         transaction.provider_reference = result.transaction_id || '';
@@ -287,7 +293,7 @@ async function handlePaymentWebhook(method, req, res) {
     if (refId) {
       try {
         provider = await verifySolutionIPPayment(refId);
-        confirmed = provider && provider.status === true && provider.trans_status === 'ok';
+        confirmed = gatewayConfirmed(provider);
       } catch (e) {
         // Provider unreachable. Fail closed and say so loudly - a webhook we
         // could not confirm must never move money.
