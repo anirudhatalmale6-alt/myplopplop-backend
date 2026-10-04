@@ -44,6 +44,21 @@ function normalizeCode(code) {
   return String(code).trim().toUpperCase().replace(/\s+/g, '');
 }
 
+/* A ticket buyer has NO ACCOUNT. Tikè Lakay asks for a name and a telephone
+   number and nothing else, so the telephone number is the only thing that
+   identifies the same person coming back a second time.
+
+   ⚠️ This MUST match haitibiznis-backend/utils/ticketDelivery.js phoneKey()
+   exactly, or the same buyer is two different people to the two services and
+   the 12-month window silently never applies. Last eight digits: that is the
+   part that identifies a Haitian subscriber whether or not whoever typed it
+   included the 509. */
+function phoneKey(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  return d.length > 8 ? d.slice(-8) : d;
+}
+
 /* Attach a referral to somebody who just registered.
 
    Returns { attached, reason, referral } and NEVER throws: a registration is
@@ -87,6 +102,20 @@ async function attachReferral(opts) {
       }
     }
 
+    /* The same rule for somebody who has no account at all. A ticket buyer is
+       only ever a telephone number, so without this a second agent's code on
+       her next ticket would quietly take her off the first agent. */
+    const pk = phoneKey(o.phone);
+    if (!o.user && pk) {
+      const already = await KoutyeReferral.findOne({
+        'referredEntity.phoneKey': pk,
+        platform: platform
+      });
+      if (already) {
+        return { attached: false, reason: 'already_referred', referral: already };
+      }
+    }
+
     const rate = COMMISSION_RATES[platform];
     const startDate = new Date();
     const expiryDate = new Date(startDate);
@@ -100,6 +129,7 @@ async function attachReferral(opts) {
         type: o.entityType || 'customer',
         name: o.name,
         phone: o.phone,
+        phoneKey: phoneKey(o.phone) || undefined,
         email: o.email,
         userId: o.user || undefined
       },
@@ -130,11 +160,27 @@ async function attachReferral(opts) {
 // payment paths so nothing pays out on a referral that has run past 12 months.
 async function activeReferralFor(userId, platform) {
   if (!userId) return null;
-  const ref = await KoutyeReferral.findOne({
+  return liveOrExpire(await KoutyeReferral.findOne({
     'referredEntity.userId': userId,
     platform: platform || 'myplopplop',
     status: 'active'
-  });
+  }));
+}
+
+/* The same question for somebody with no account - a ticket buyer. */
+async function activeReferralForPhone(phone, platform) {
+  const pk = phoneKey(phone);
+  if (!pk) return null;
+  return liveOrExpire(await KoutyeReferral.findOne({
+    'referredEntity.phoneKey': pk,
+    platform: platform || 'tikelakay',
+    status: 'active'
+  }));
+}
+
+/* 12 months is 12 months. A referral that has run out is closed here, the
+   first time anybody asks about it, rather than being left to pay for ever. */
+async function liveOrExpire(ref) {
   if (!ref) return null;
   if (ref.isExpired()) {
     ref.status = 'expired';
@@ -202,7 +248,21 @@ async function payCommissionForUser(userId, opts) {
   try {
     const referral = await activeReferralFor(userId, platform);
     if (!referral) return { commissioned: false, reason: 'no_active_referral' };
+    return await payOnReferral(referral, platform, amount, o);
+  } catch (err) {
+    console.error('payCommissionForUser failed for ' + userId + ':', err.message);
+    return { commissioned: false, reason: 'error' };
+  }
+}
 
+/* Write the commission against a referral that has already been found.
+   ⛔ Shared by every path on purpose: a ticket, an order and a ride must agree
+   on what "the agent's share" means, and two copies of this would drift the
+   way the two rate tables already did. */
+async function payOnReferral(referral, platform, amount, o) {
+  const fees = PLATFORM_FEES[platform];
+  if (!fees) return { commissioned: false, reason: 'bad_platform' };
+  try {
     const Koutye = require('../models/Koutye');
     const KoutyeCommission = require('../models/KoutyeCommission');
 
@@ -256,7 +316,59 @@ async function payCommissionForUser(userId, opts) {
       koutyeCode: koutye.koutyeCode, commissionId: commission._id
     };
   } catch (err) {
-    console.error('payCommissionForUser failed for ' + userId + ':', err.message);
+    console.error('payOnReferral failed on ' + platform + ':', err.message);
+    return { commissioned: false, reason: 'error' };
+  }
+}
+
+/* ── TIKE LAKAY ────────────────────────────────────────────────────────────
+   Jeffery, 3 Oct 2026: "I want the buyer to become that agent's referred
+   customer for 12 months... During that period, when that customer purchases
+   eligible Tike Lakay tickets, the assigned agent should receive the 3%."
+
+   So there are two jobs here and they are deliberately in this order:
+     1. if she is nobody's customer yet and a code came with the sale, attach
+        her to that agent for 12 months;
+     2. pay whoever she ALREADY belongs to - which may not be the agent whose
+        code is on today's ticket. First agent wins, for the whole year.
+
+   ⛔ `amount` is the TICKET PRICE, never the 1,075 the buyer hands over. The
+   fee is added on top of the price, and the agent's 3% comes out of that fee.  */
+async function commissionForTicketSale(opts) {
+  const o = opts || {};
+  const platform = 'tikelakay';
+  const amount = Number(o.amount);
+  const pk = phoneKey(o.phone);
+
+  if (!pk) return { commissioned: false, reason: 'no_phone' };
+  if (!isFinite(amount) || amount <= 0) return { commissioned: false, reason: 'no_amount' };
+
+  try {
+    let referral = await activeReferralForPhone(o.phone, platform);
+    let attached = null;
+
+    if (!referral && o.koutyeCode) {
+      attached = await attachReferral({
+        code: o.koutyeCode, platform: platform, entityType: 'customer',
+        name: o.name, phone: o.phone, email: o.email,
+        source: o.description || 'Tike Lakay ticket'
+      });
+      if (attached.attached) referral = attached.referral;
+      else if (attached.referral) referral = await liveOrExpire(attached.referral);
+    }
+
+    if (!referral) {
+      return { commissioned: false, attached: false,
+               reason: (attached && attached.reason) || 'no_active_referral' };
+    }
+
+    const paid = await payOnReferral(referral, platform, amount, o);
+    return Object.assign({ attached: !!(attached && attached.attached),
+                           koutyeCode: referral.koutyeCode }, paid);
+  } catch (err) {
+    /* A ticket is the thing that matters. If the commission cannot be written
+       the buyer still has her ticket and we still have the sale on record. */
+    console.error('commissionForTicketSale failed:', err.message);
     return { commissioned: false, reason: 'error' };
   }
 }
@@ -264,7 +376,10 @@ async function payCommissionForUser(userId, opts) {
 module.exports = {
   attachReferral,
   activeReferralFor,
+  activeReferralForPhone,
   payCommissionForUser,
+  commissionForTicketSale,
+  phoneKey,
   normalizeCode,
   REFERRAL_WINDOW_DAYS,
   COMMISSION_RATES,
