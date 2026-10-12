@@ -96,21 +96,69 @@ router.post('/apply', protect, async (req, res) => {
 });
 
 // ─── Validate referral code (check if it exists) ───
+/* 🚨🚨 12 Oct 2026 — THIS REJECTED ALL 19 REAL AGENTS.
+ *
+ * There are TWO referral-code systems in this service:
+ *   1. the Koutye engine - `koutyes.koutyeCode`, 19 active agents, the 12-month
+ *      window, the commission ledger, the wallets. The real one.
+ *   2. an older field on the user record - `users.referralCode`. Three users
+ *      have one. None of them is an agent.
+ *
+ * This endpoint read (2). So asking it about @FREY25 - a live, active agent -
+ * answered "Invalid referral code". Every one of the 19 failed.
+ *
+ * Nothing on the website called it yet, so it was blocking nobody; but it is
+ * the obvious call for a QR landing page to make ("is this code real?"), and
+ * Jeffery has 12 more agents starting. It would have told every one of them
+ * their code was invalid.
+ *
+ * 🔑 Same shape as the acRank bug in MsouWout the day before: the right answer
+ *    computed in one place, and a second place that does not know about it.
+ *
+ * ⛔ The Koutye engine is now the authority. The old user field is still
+ *    accepted as a fallback so the three existing codes do not break, but it
+ *    is checked SECOND and the response says which kind was matched.
+ */
+const Koutye = require('../models/Koutye');
+
 // GET /api/referrals/validate/:code
 router.get('/validate/:code', async (req, res) => {
   try {
-    const referrer = await User.findOne({
-      referralCode: req.params.code.toUpperCase()
-    }).select('name');
-
-    if (!referrer) {
+    const raw = String(req.params.code || '').trim();
+    if (!raw) {
       return res.status(404).json({ success: false, message: 'Invalid referral code' });
     }
 
-    res.json({
-      success: true,
-      referrerName: referrer.name
-    });
+    /* Agents write their code on paper and into cracked phones. Match the way
+       attachReferral() does - case-insensitively, with the regex characters
+       escaped - or validate and attach would disagree about the same code,
+       which is the fault this is fixing. */
+    const esc = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const koutye = await Koutye.findOne({ koutyeCode: new RegExp('^' + esc + '$', 'i') })
+      .populate('user', 'name');
+
+    if (koutye) {
+      /* ⛔ An inactive agent is a REAL code that must not be used. Saying
+         "invalid" would send somebody hunting for a typo that is not there. */
+      if (koutye.status !== 'active') {
+        return res.status(409).json({
+          success: false, kind: 'koutye', active: false,
+          message: 'This agent code is not active at the moment.'
+        });
+      }
+      return res.json({
+        success: true, kind: 'koutye',
+        code: koutye.koutyeCode,
+        referrerName: (koutye.user && koutye.user.name) || null
+      });
+    }
+
+    const referrer = await User.findOne({ referralCode: raw.toUpperCase() }).select('name');
+    if (referrer) {
+      return res.json({ success: true, kind: 'user', referrerName: referrer.name });
+    }
+
+    return res.status(404).json({ success: false, message: 'Invalid referral code' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Validation failed' });
   }
