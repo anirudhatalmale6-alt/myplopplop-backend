@@ -98,6 +98,9 @@ function parseDriverFunnel(j, slug) {
   if (!rows) return null;
   const want = String(slug).toLowerCase();
   const mine = rows.filter(x => String(x.partner || '').toLowerCase() === want);
+  /* The rides service answered and has no row for this partner: that is a
+     real zero (no drivers yet), not "unknown". */
+  if (!mine.length) return { registered: 0, approved: 0, qualified: 0 };
   const sum = (k) => mine.some(x => x[k] != null) ? mine.reduce((a, x) => a + (+x[k] || 0), 0) : null;
   return { registered: sum('total_registered'), approved: sum('approved_drivers'), qualified: sum('qualified_drivers') };
 }
