@@ -6,6 +6,21 @@ const KoutyeReferral = require('../models/KoutyeReferral');
 const KoutyeCommission = require('../models/KoutyeCommission');
 const KoutyePayout = require('../models/KoutyePayout');
 const KoutyeWallet = require('../models/KoutyeWallet');
+
+/* ═══ NO DOUBLE PAYMENT (15 Oct 2026) ════════════════════════════════════════
+   Jeffery: "When an Ajan belongs to StarFlex, the same existing commission
+   should be attributed to StarFlex Enterprise instead of being paid
+   separately to the individual Ajan... HaitiBiznis must never pay an
+   additional Enterprise commission on top of the existing Ajan commission."
+
+   A commission earned by an Enterprise Ajan carries `organization` (stamped
+   from the referral at the moment of recruitment). It is recorded ONCE, at
+   the SAME rate, and it belongs to the organisation. So every figure an
+   individual Ajan can withdraw - wallet, payout request, and what mark-paid
+   settles - counts only commissions with NO organisation. Without this the
+   same line would sit in the Ajan's wallet AND in StarFlex's total.
+   `$in: ['', null]` also matches records from before the field existed. */
+const PERSONAL = { organization: { $in: ['', null] } };
 const ParenajSignup = require('../models/ParenajSignup');
 const User = require('../models/User');
 const referralService = require('../services/referral');
@@ -84,12 +99,12 @@ router.get('/dashboard', protect, async (req, res) => {
     });
 
     const pendingCommissions = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: 'pending' } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: 'pending' } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
 
     const approvedCommissions = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: 'approved' } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: 'approved' } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
 
@@ -99,7 +114,7 @@ router.get('/dashboard', protect, async (req, res) => {
       .populate('referral', 'platform referredEntity.name');
 
     const platformStats = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: { $in: ['pending', 'approved', 'paid'] } } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: { $in: ['pending', 'approved', 'paid'] } } },
       { $group: { _id: '$platform', total: { $sum: '$amount' }, count: { $sum: 1 } } }
     ]);
 
@@ -139,7 +154,9 @@ router.get('/dashboard', protect, async (req, res) => {
           status: c.status,
           description: c.description,
           date: c.createdAt,
-          referralName: c.referral?.referredEntity?.name
+          referralName: c.referral?.referredEntity?.name,
+          // set => this line belongs to the organisation (e.g. STARFLEX), not to the Ajan's wallet
+          organization: c.organization || ''
         })),
         payoutMethod: koutye.payoutMethod,
         lastPayoutDate: koutye.lastPayoutDate
@@ -317,6 +334,8 @@ router.post('/commissions/record', protect, authorize('admin'), async (req, res)
       amount: commissionAmount,
       description: description || `Commission from ${referral.platform}`,
       sourceTransaction,
+      // same rule as the automatic path: an Enterprise Ajan's commission is the organisation's
+      organization: referral.organization || '',
       status: 'pending'
     });
 
@@ -325,7 +344,7 @@ router.post('/commissions/record', protect, authorize('admin'), async (req, res)
     referral.lastCommissionDate = new Date();
     await referral.save();
 
-    const koutye = await Koutye.findById(referral.koutye);
+    const koutye = !referral.organization && await Koutye.findById(referral.koutye);
     if (koutye) {
       koutye.stats.totalEarnings += commissionAmount;
       koutye.stats.pendingEarnings += commissionAmount;
@@ -459,22 +478,22 @@ router.get('/wallet', protect, async (req, res) => {
     }
 
     const pendingComm = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: 'pending' } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: 'pending' } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const validatedComm = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: { $in: ['validated', 'approved'] } } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: { $in: ['validated', 'approved'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const paidComm = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: 'paid' } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: 'paid' } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
 
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const paidThisMonth = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: 'paid', paidAt: { $gte: monthStart } } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: 'paid', paidAt: { $gte: monthStart } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
 
@@ -520,7 +539,7 @@ router.post('/payout/request', protect, async (req, res) => {
     }
 
     const validatedTotal = await KoutyeCommission.aggregate([
-      { $match: { koutye: koutye._id, status: { $in: ['validated', 'approved'] } } },
+      { $match: { koutye: koutye._id, ...PERSONAL, status: { $in: ['validated', 'approved'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const available = validatedTotal[0]?.total || 0;
@@ -671,6 +690,7 @@ router.patch('/admin/payouts/:id/mark-paid', protect, authorize('admin'), async 
 
     const commissions = await KoutyeCommission.find({
       koutye: payout.koutye,
+      ...PERSONAL,
       status: { $in: ['validated', 'approved'] }
     }).sort({ createdAt: 1 });
 

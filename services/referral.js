@@ -302,12 +302,17 @@ async function payOnReferral(referral, platform, amount, o) {
       organization: referral.organization || ''
     });
 
-    koutye.stats.totalEarnings = (koutye.stats.totalEarnings || 0) + commissionAmount;
-    koutye.stats.pendingEarnings = (koutye.stats.pendingEarnings || 0) + commissionAmount;
-    const pb = koutye.platformBreakdown && koutye.platformBreakdown[platform];
-    if (pb) pb.earnings = (pb.earnings || 0) + commissionAmount;
-    koutye.updateTier();
-    await koutye.save();
+    /* An Enterprise Ajan's commission belongs to the organisation, not to
+       the Ajan (see routes/koutye.js PERSONAL) - so it is not added to the
+       Ajan's own earnings counters either. Same amount, same rate, one line. */
+    if (!referral.organization) {
+      koutye.stats.totalEarnings = (koutye.stats.totalEarnings || 0) + commissionAmount;
+      koutye.stats.pendingEarnings = (koutye.stats.pendingEarnings || 0) + commissionAmount;
+      const pb = koutye.platformBreakdown && koutye.platformBreakdown[platform];
+      if (pb) pb.earnings = (pb.earnings || 0) + commissionAmount;
+      koutye.updateTier();
+      await koutye.save();
+    }
 
     referral.totalCommissionEarned = (referral.totalCommissionEarned || 0) + commissionAmount;
     referral.commissionCount = (referral.commissionCount || 0) + 1;
