@@ -130,6 +130,41 @@ async function driverStats(slug) {
   }
 }
 
+/* The drivers themselves, for the dashboard's "Drivers Signed Up" table,
+   which had no code behind it at all and always said "No drivers yet" under
+   a tile counting them. Same rides-service list msouwout.com's partner page
+   reads. The phone is cut to its last 4 digits HERE as well as there: this
+   answer goes to whoever holds the organisation's code, and it must never
+   carry a full number even if the rides service is an older version.
+   null = could not ask (the page then says so); [] = asked, nobody.          */
+async function driverList(slug) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 8000);
+  try {
+    const r = await fetch(MSW_API + '/api/drivers/partner-drivers?partner=' + encodeURIComponent(slug),
+      { signal: c.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j)) return null;
+    return j.slice(0, 500).map(x => {
+      const d = String(x.phone || '').replace(/\D/g, '');
+      return {
+        name: x.full_name || '',
+        phone: d.length >= 4 ? '•••• ' + d.slice(-4) : '',
+        vehicle: x.vehicle_type || '',
+        status: x.status || '',
+        trips: parseInt(x.trip_count, 10) || 0,
+        agent: x.referral_code || '',
+        date: x.created_at || null
+      };
+    });
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /* ═══ ENTERPRISE: THE ORGANISATION'S OWN AJAN (15 Oct 2026) ════════════════
    "HaitiBiznis -> StarFlex Enterprise -> StarFlex Ajan -> recruits."
    Built on what was already here: Koutye agents (code, QR, wallet) and these
@@ -245,17 +280,19 @@ router.post('/:slug/open', async (req, res) => {
     org.lastOpenedAt = new Date();
     await org.save();
 
-    const [s, d, team] = await Promise.all([
+    const [s, d, team, drivers] = await Promise.all([
       storeStats(org.slug), driverStats(org.slug),
       /* A failure here must not lock a partner out of the dashboard they
          already had - shops and drivers still show. */
-      teamStats(org.slug).catch(e => ({ error: e.message }))
+      teamStats(org.slug).catch(e => ({ error: e.message })),
+      driverList(org.slug)
     ]);
     res.json({
       success: true,
       organization: { slug: org.slug, name: org.name, fullName: org.fullName,
                       logo: org.logo, color: org.color },
       stores: s.stores,
+      drivers,
       stats: {
         stores: s.count,
         activeStores: s.active,
