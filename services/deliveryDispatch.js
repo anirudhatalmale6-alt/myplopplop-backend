@@ -36,11 +36,12 @@ function isRealPin(l, t) {
 }
 
 // When there is no distance to price from, the delivery is worth what the
-// customer was quoted and charged at checkout. Same 25% commission split.
+// customer was quoted and charged at checkout. The delivery split: 80% driver,
+// 20% HaitiBiznis (utils/fareCalculator.js) - the same split the order records.
 function fareFromQuote(quoted) {
-  const { COMMISSION_RATE, RATES } = require('../utils/fareCalculator');
+  const { commissionRateFor, RATES } = require('../utils/fareCalculator');
   const total = Math.round(Number(quoted) > 0 ? Number(quoted) : RATES.delivery.minFare);
-  const commission = Math.round(total * COMMISSION_RATE);
+  const commission = Math.round(total * commissionRateFor('delivery'));
   return { totalFare: total, commission, driverEarning: total - commission };
 }
 
