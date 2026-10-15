@@ -557,7 +557,29 @@ router.get('/:id', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
-    res.json({ success: true, ride });
+    /* 🛑 15 Oct 2026: only the people on this ride may read it. It answered
+       ANY logged-in user with the customer's name, phone, addresses, GPS and
+       the delivery code. Allowed: the customer, the driver, an admin, and -
+       for a delivery - the owner of the shop it is for. Same 404 as a missing
+       ride, so it cannot be used to discover which rides exist.
+       The delivery code goes ONLY to the customer: the driver must get it
+       from the customer at the door, or it proves nothing. */
+    const me = String(req.user._id);
+    const isCustomer = ride.customer && String(ride.customer._id || ride.customer) === me;
+    const isDriver = ride.driver && String(ride.driver._id || ride.driver) === me;
+    let isShop = false;
+    if (!isCustomer && !isDriver && req.user.role !== 'admin' && ride.order) {
+      const Order = require('../models/Order'), Store = require('../models/Store');
+      const o = await Order.findById(ride.order).select('store');
+      const st = o && await Store.findById(o.store).select('owner');
+      isShop = !!(st && String(st.owner) === me);
+    }
+    if (!isCustomer && !isDriver && !isShop && req.user.role !== 'admin') {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+    const out = ride.toObject();
+    if (!isCustomer && req.user.role !== 'admin') delete out.pin;
+    res.json({ success: true, ride: out });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

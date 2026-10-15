@@ -104,27 +104,15 @@ router.post('/', protect, [
 
     var total = subtotal + deliveryFee + serviceFee + diasporaFee;
 
-    // Referral: 10% of platform commission
+    /* 🛑 15 Oct 2026: the old customer-referral bonus is SWITCHED OFF.
+       It credited 10% of the merchant commission straight into the referrer's
+       WALLET the moment an order was PLACED - before any payment - and wallet
+       balance can pay for orders instantly. Unpaid orders therefore minted
+       spendable money. It never paid anybody (no user had referredBy set).
+       Agent commissions come from the Koutye engine, on PAID orders only
+       (routes/payments.js). Jeffery: no commission on unpaid orders. */
     var referralBonus = 0;
     var customer = await User.findById(req.user._id);
-    if (customer.referredBy) {
-      referralBonus = Math.round(commission * 0.10);
-      var referrer = await User.findById(customer.referredBy);
-      if (referrer) {
-        referrer.wallet.balance += referralBonus;
-        referrer.referralEarnings += referralBonus;
-        await referrer.save();
-        await Transaction.create({
-          user: referrer._id,
-          type: 'referral',
-          amount: referralBonus,
-          currency: 'HTG',
-          method: 'wallet',
-          status: 'completed',
-          description: 'Referral bonus: 10% of order commission'
-        });
-      }
-    }
 
     // Process wallet payment
     if (req.body.paymentMethod === 'wallet') {
