@@ -25,7 +25,11 @@ const koutyeCommissionSchema = new mongoose.Schema({
   organization: { type: String, default: '', index: true },
   serviceType: {
     type: String,
-    enum: ['package', 'ride', 'delivery', 'marketplace', 'utility', 'sol', 'talent'],
+    /* 'ticket' added 15 Oct 2026: routes/referrals.js /ticket-sale has sent it
+       since 3 Oct, and without it here EVERY paid Tike Lakay ticket's
+       commission failed validation and was silently not written. Found by
+       testing the door itself rather than the function behind it. */
+    enum: ['package', 'ride', 'delivery', 'marketplace', 'utility', 'sol', 'talent', 'ticket'],
     default: 'package'
   },
   sourceAmount: {
