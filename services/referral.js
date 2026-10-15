@@ -27,13 +27,23 @@ const KoutyeReferral = require('../models/KoutyeReferral');
 // written down keep the expiry date they were given.
 const REFERRAL_WINDOW_DAYS = 365;
 
+/* What an Ajan is SHOWN as their rate on each referral. 15 Oct 2026, Jeffery:
+   "These commissions must never be silently reduced or calculated using
+   incorrect percentages... correct the incorrect commission labels."
+   These used to say 10% for MsouWout and MyPlopPlop while the engine paid 1%
+   of a MyPlopPlop order and nothing at all on a ride. They now say what is
+   ACTUALLY paid today, as a share of what the customer bought. ⛔ Change a
+   number here only in the same commit that changes what PLATFORM_FEES below
+   pays - the two must never disagree again.
+   (The only thing that ever used `rate` for money was the admin manual-record
+   button, which is disabled - routes/koutye.js.)                            */
 const COMMISSION_RATES = {
-  '48hoursready': { rate: 0.10, type: 'percentage', label: '10% on packages' },
-  'msouwout':     { rate: 0.10, type: 'percentage', label: 'Recurring up to 12 months' },
-  'myplopplop':   { rate: 0.10, type: 'percentage', label: 'Recurring up to 12 months' },
-  'utility':      { rate: 0.05, type: 'per_transaction', label: 'Per transaction' },
-  'sol':          { rate: 0.03, type: 'per_activity', label: 'Per group/activity' },
-  'prolakay':     { rate: 0.10, type: 'percentage', label: 'Per referral' },
+  '48hoursready': { rate: 0.10, type: 'percentage', label: '10% of the package price' },
+  'msouwout':     { rate: 0,    type: 'percentage', label: 'Not active yet: 3% of the completed, paid ride fare to the driver\'s Ajan, from activation' },
+  'myplopplop':   { rate: 0.01, type: 'percentage', label: '1% of the order today (3% approved, from activation)' },
+  'utility':      { rate: 0,    type: 'per_transaction', label: 'Not active yet' },
+  'sol':          { rate: 0,    type: 'per_activity', label: 'Not active yet' },
+  'prolakay':     { rate: 0,    type: 'percentage', label: 'Not active yet' },
   'tikelakay':    { rate: 0.03, type: 'percentage', label: '3% of the ticket price' }
 };
 
@@ -294,7 +304,9 @@ async function payOnReferral(referral, platform, amount, o) {
       serviceType: o.serviceType || 'marketplace',
       sourceAmount: amount,
       platformFee: platformFee,
-      commissionRate: fees.koutyeRate,
+      /* The share of what the customer BOUGHT (3% on a ticket), not the share
+         of the platform fee (40%) - this is the number an Ajan reads. */
+      commissionRate: Math.round(fees.feeRate * fees.koutyeRate * 10000) / 10000,
       amount: commissionAmount,
       status: 'pending',
       description: o.description || fees.label,

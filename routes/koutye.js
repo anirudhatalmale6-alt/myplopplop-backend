@@ -196,7 +196,11 @@ router.get('/referrals', protect, async (req, res) => {
         name: r.referredEntity.name
       },
       status: r.expiryDate < now && r.status === 'active' ? 'expired' : r.status,
-      commissionRate: r.commissionRate,
+      /* The rate paid TODAY for this platform, not the number frozen on the
+         record when it was written (old records say 10% for rides and shop
+         orders, which was never paid). */
+      commissionRate: (COMMISSION_RATES[r.platform] || {}).rate,
+      commissionLabel: (COMMISSION_RATES[r.platform] || {}).label || '',
       totalCommissionEarned: r.totalCommissionEarned,
       commissionCount: r.commissionCount,
       startDate: r.startDate,
@@ -277,7 +281,8 @@ router.post('/referrals/track', protect, async (req, res) => {
       data: {
         referralId: referral._id,
         platform: referral.platform,
-        commissionRate: referral.commissionRate,
+        commissionRate: (COMMISSION_RATES[referral.platform] || {}).rate,
+        commissionLabel: (COMMISSION_RATES[referral.platform] || {}).label || '',
         commissionType: referral.commissionType,
         expiryDate: referral.expiryDate,
         daysValid: referralService.REFERRAL_WINDOW_DAYS
@@ -298,6 +303,19 @@ router.post('/referrals/track', protect, async (req, res) => {
 // (routes/payments.js) and the code that finishes a ride (routes/rides.js).
 // It stays only as an admin correction tool.
 router.post('/commissions/record', protect, authorize('admin'), async (req, res) => {
+  /* ⛔ DISABLED 15 Oct 2026 on Jeffery's instruction: "The manual commission
+     function must not calculate 10% indiscriminately. Disable it until it can
+     correctly apply each service's approved rate."
+     It multiplied the WHOLE amount by the rate frozen on the referral (10% for
+     rides and shop orders - ten times what the engine pays). It was never
+     used. Every real commission goes through services/referral.js
+     payOnReferral, which applies each platform's own rule. The code below is
+     kept, unreachable, until it is rebuilt on that same rule. */
+  return res.status(410).json({
+    success: false,
+    message: 'Manual commission recording is disabled. Commissions are recorded automatically at each platform\'s approved rate.'
+  });
+  // eslint-disable-next-line no-unreachable
   try {
     const { referralId, sourceAmount, description, sourceTransaction } = req.body;
 
@@ -445,7 +463,9 @@ router.get('/commissions', protect, async (req, res) => {
         id: c._id,
         platform: c.platform,
         sourceAmount: c.sourceAmount,
-        commissionRate: c.commissionRate,
+        /* Worked out from the line itself, so lines written before 15 Oct
+           (which stored the share of the FEE, e.g. 0.40) still read right. */
+        commissionRate: c.sourceAmount ? Math.round(c.amount / c.sourceAmount * 10000) / 10000 : c.commissionRate,
         amount: c.amount,
         status: c.status,
         description: c.description,
