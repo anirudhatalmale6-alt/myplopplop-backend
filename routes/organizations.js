@@ -166,6 +166,27 @@ async function teamStats(slug) {
     { $group: { _id: { $arrayElemAt: ['$k.koutyeCode', 0] }, amount: { $sum: '$amount' } } }
   ]);
 
+  /* The people themselves, newest first, so the organisation can see WHO each
+     Ajan brought in - not just a count. Phone numbers are cut to the last 4
+     digits: enough to recognise someone, not enough to call a stranger's
+     customer. 500 is far beyond any team today; the total above stays exact. */
+  const recent = await KoutyeReferral.find({ organization: re })
+    .select('koutyeCode platform referredEntity.type referredEntity.name referredEntity.phone status startDate createdAt')
+    .sort({ startDate: -1 }).limit(500).lean();
+  const maskPhone = (p) => {
+    const d = String(p || '').replace(/\D/g, '');
+    return d.length >= 4 ? '\u2022\u2022\u2022\u2022 ' + d.slice(-4) : '';
+  };
+  const recruits = recent.map(r => ({
+    agent: r.koutyeCode,
+    name: (r.referredEntity && r.referredEntity.name) || '',
+    type: (r.referredEntity && r.referredEntity.type) || 'customer',
+    platform: r.platform,
+    phone: maskPhone(r.referredEntity && r.referredEntity.phone),
+    status: r.status,
+    date: r.startDate || r.createdAt || null
+  }));
+
   const perAgent = {};
   const byPlatform = {};
   const byType = {};
@@ -205,6 +226,7 @@ async function teamStats(slug) {
       commissionGenerated: comMap[a.koutyeCode] || 0
     })),
     referrals: { total: refAgg.reduce((x, r) => x + r.n, 0), byPlatform, byType },
+    recruits,
     commissions,
     payoutsEnabled: false
   };
