@@ -90,6 +90,18 @@ function parseDriverRows(j, slug) {
   return null;
 }
 
+/* Registered -> Approved -> Qualified (Jeffery, 15 Oct: approved AND at least
+   one legitimate paid ride). Null for a field the rides service does not send
+   yet - an older deploy - so the page shows "-" rather than a believable 0. */
+function parseDriverFunnel(j, slug) {
+  const rows = Array.isArray(j) ? j : (j && Array.isArray(j.stats) ? j.stats : null);
+  if (!rows) return null;
+  const want = String(slug).toLowerCase();
+  const mine = rows.filter(x => String(x.partner || '').toLowerCase() === want);
+  const sum = (k) => mine.some(x => x[k] != null) ? mine.reduce((a, x) => a + (+x[k] || 0), 0) : null;
+  return { registered: sum('total_registered'), approved: sum('approved_drivers'), qualified: sum('qualified_drivers') };
+}
+
 async function driverStats(slug) {
   /* A short timeout on purpose. The dashboard must still open and show the
      shops even when the rides service is asleep. */
@@ -107,7 +119,7 @@ async function driverStats(slug) {
        that has some, which is worse than an error. */
     const n = parseDriverRows(j, slug);
     if (n == null) return { reachable: false, count: null, why: 'unexpected shape' };
-    return { reachable: true, count: n };
+    return { reachable: true, count: n, funnel: parseDriverFunnel(j, slug) };
   } catch (e) {
     return { reachable: false, count: null, why: e.message };
   } finally {
@@ -224,7 +236,8 @@ router.post('/:slug/open', async (req, res) => {
         activeStores: s.active,
         withAgent: s.withAgent,
         drivers: d.count,
-        driversReachable: d.reachable
+        driversReachable: d.reachable,
+        driverFunnel: d.funnel || null
       },
       team
     });
@@ -382,4 +395,5 @@ router.post('/:slug/agents/remove', requirePin, async (req, res) => {
 
 module.exports = router;
 module.exports.parseDriverRows = parseDriverRows;
+module.exports.parseDriverFunnel = parseDriverFunnel;
 module.exports.teamStats = teamStats;
