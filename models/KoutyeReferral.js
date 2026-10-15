@@ -57,7 +57,12 @@ const koutyeReferralSchema = new mongoose.Schema({
     default: 0
   },
   lastCommissionDate: Date,
-  sourceDescription: String
+  sourceDescription: String,
+  /* The agent's organisation AT THE MOMENT this person was recruited, copied,
+     not looked up later. If the agent moves to another organisation next
+     year, everybody they already brought stays credited to the one they were
+     working for then. Empty = no organisation. */
+  organization: { type: String, default: '', index: true }
 }, {
   timestamps: true
 });

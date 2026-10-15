@@ -137,7 +137,9 @@ async function attachReferral(opts) {
       commissionType: rate.type,
       startDate: startDate,
       expiryDate: expiryDate,
-      sourceDescription: o.source || rate.label
+      sourceDescription: o.source || rate.label,
+      /* Stamped now, never recomputed - see the model. */
+      organization: koutye.organization || ''
     });
 
     koutye.stats.totalReferrals = (koutye.stats.totalReferrals || 0) + 1;
@@ -296,7 +298,8 @@ async function payOnReferral(referral, platform, amount, o) {
       amount: commissionAmount,
       status: 'pending',
       description: o.description || fees.label,
-      expiresAt: referral.expiryDate
+      expiresAt: referral.expiryDate,
+      organization: referral.organization || ''
     });
 
     koutye.stats.totalEarnings = (koutye.stats.totalEarnings || 0) + commissionAmount;

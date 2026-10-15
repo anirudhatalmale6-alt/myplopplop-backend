@@ -149,7 +149,11 @@ router.get('/validate/:code', async (req, res) => {
       return res.json({
         success: true, kind: 'koutye',
         code: koutye.koutyeCode,
-        referrerName: (koutye.user && koutye.user.name) || null
+        referrerName: (koutye.user && koutye.user.name) || null,
+        /* Enterprise partner the agent recruits for ('' = independent). Lets a
+           signup form on another service record BOTH the agent and the
+           organisation without a second lookup. */
+        organization: koutye.organization || ''
       });
     }
 
@@ -244,6 +248,62 @@ router.post('/ticket-sale', async (req, res) => {
     console.error('[TIKELAKAY] ticket-sale failed:', err.message);
     res.json({ success: true, result: { commissioned: false, reason: 'error' } });
   }
+});
+
+/* ═══ OTHER SERVICES -> "THIS PERSON WAS RECRUITED BY THIS AGENT" ═══════════
+   15 Oct 2026. MsouWout keeps its drivers in its own database, so until now a
+   driver recruited by an Ajan was recorded nowhere the agent engine could see:
+   the Ajan's dashboard showed nothing and no organisation could count them.
+
+   Same lock as /ticket-sale above: only the two servers hold the key, and a
+   missing key means the door is CLOSED. ⛔ Never make this public - agent
+   codes are printed on flyers, and anybody who could post here could pin
+   other people's phone numbers to an agent and take them under first-agent-
+   wins.
+
+   Records the attribution ONLY. No money is written here; commissions are
+   earned later on paid activity, through the existing payment paths.      */
+function internalKeyOk(req) {
+  const expected = process.env.INTERNAL_SERVICE_KEY;
+  if (!expected) return null;               // not configured -> closed
+  const crypto = require('crypto');
+  const a = Buffer.from(String(req.get('x-internal-key') || ''));
+  const b = Buffer.from(String(expected));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+const ATTACH_PLATFORMS = ['msouwout', 'myplopplop', 'tikelakay', '48hoursready', 'prolakay'];
+const ATTACH_TYPES = ['driver', 'customer', 'merchant', 'business', 'professional'];
+
+router.post('/attach', async (req, res) => {
+  const ok = internalKeyOk(req);
+  if (ok === null) return res.status(503).json({ success: false, message: 'Service link not configured' });
+  if (!ok) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+  const b = req.body || {};
+  const platform = String(b.platform || '');
+  const entityType = String(b.entityType || '');
+  if (ATTACH_PLATFORMS.indexOf(platform) < 0) return res.status(400).json({ success: false, message: 'bad platform' });
+  if (ATTACH_TYPES.indexOf(entityType) < 0) return res.status(400).json({ success: false, message: 'bad entityType' });
+
+  /* attachReferral never throws and enforces every rule already: unknown or
+     inactive agent, self-referral, first-agent-wins by phone. */
+  const out = await referralService.attachReferral({
+    code: b.code, platform, entityType,
+    name: String(b.name || '').slice(0, 120),
+    phone: String(b.phone || '').slice(0, 40),
+    source: String(b.source || '').slice(0, 120) || undefined
+  });
+  const r = out.referral;
+  res.json({
+    success: true,
+    attached: !!out.attached,
+    reason: out.reason,
+    /* Whoever the person belongs to now - which, under first-agent-wins, may
+       be an EARLIER agent than the one whose code came with this signup. */
+    koutyeCode: r ? r.koutyeCode : null,
+    organization: r ? (r.organization || '') : null
+  });
 });
 
 module.exports = router;

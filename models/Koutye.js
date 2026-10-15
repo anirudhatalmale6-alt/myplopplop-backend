@@ -62,6 +62,16 @@ const koutyeSchema = new mongoose.Schema({
        nothing against ticket sales - which is the half he would notice. */
     'tikelakay': { referrals: { type: Number, default: 0 }, earnings: { type: Number, default: 0 } }
   },
+  /* ENTERPRISE PARTNERS, 15 Oct 2026. Jeffery: "HaitiBiznis -> StarFlex
+     Enterprise -> StarFlex Ajan -> recruited drivers/businesses." The agent
+     keeps their own code, QR, history and wallet; this only says which
+     partner organisation they recruit FOR. It is the Organization `slug`
+     (e.g. "STARFLEX"), the same string already written on shops and drivers.
+     Empty = an independent HaitiBiznis Ajan.
+     ⛔ Set only from the console, from a list the organisation sent and he
+     approved - never by the agent, never by a referral link. */
+  organization: { type: String, trim: true, default: '', index: true, maxlength: 80 },
+  organizationLinkedAt: Date,
   lastPayoutDate: Date,
   suspendedReason: String,
   suspendedAt: Date

@@ -9,6 +9,9 @@
  *   POST /api/organizations              console code — create one
  *   POST /api/organizations/:slug/code   console code — set/replace its code
  *   POST /api/organizations/:slug/status console code — suspend / reactivate
+ *   GET  /api/organizations/:slug/agents        console code — its Ajan
+ *   POST /api/organizations/:slug/agents        console code — link Ajan (by code)
+ *   POST /api/organizations/:slug/agents/remove console code — unlink Ajan
  *
  * ⚠️ The drivers live in a different database on a different service
  * (MsouWout, PostgreSQL). This asks that service for its own count rather than
@@ -112,6 +115,86 @@ async function driverStats(slug) {
   }
 }
 
+/* ═══ ENTERPRISE: THE ORGANISATION'S OWN AJAN (15 Oct 2026) ════════════════
+   "HaitiBiznis -> StarFlex Enterprise -> StarFlex Ajan -> recruits."
+   Built on what was already here: Koutye agents (code, QR, wallet) and these
+   Organization records. The only new fact is Koutye.organization; referrals
+   and commissions carry the organisation they were made under.
+   ⚠️ Commission figures are what has been EARNED and recorded. Nothing here
+   pays anybody - payouts to an organisation stay off until the rates are
+   agreed. */
+async function teamStats(slug) {
+  const Koutye = require('../models/Koutye');
+  const KoutyeReferral = require('../models/KoutyeReferral');
+  const KoutyeCommission = require('../models/KoutyeCommission');
+  const re = slugRe(slug);
+
+  const agents = await Koutye.find({ organization: re })
+    .select('koutyeCode status tier user stats organizationLinkedAt createdAt')
+    .populate('user', 'name').sort({ koutyeCode: 1 }).lean();
+
+  /* Referrals and commissions counted from the records themselves, not from
+     the cached counters on the agent - those were never maintained for every
+     path, and a dashboard number must be one we can show the working for. */
+  const refAgg = await KoutyeReferral.aggregate([
+    { $match: { organization: re } },
+    { $group: { _id: { code: '$koutyeCode', platform: '$platform', type: '$referredEntity.type' },
+                n: { $sum: 1 } } }
+  ]);
+  const comAgg = await KoutyeCommission.aggregate([
+    { $match: { organization: re } },
+    { $group: { _id: { code: null, status: '$status' }, amount: { $sum: '$amount' }, n: { $sum: 1 } } }
+  ]);
+  const comByAgent = await KoutyeCommission.aggregate([
+    { $match: { organization: re, status: { $nin: ['rejected', 'expired'] } } },
+    { $lookup: { from: 'koutyes', localField: 'koutye', foreignField: '_id', as: 'k' } },
+    { $group: { _id: { $arrayElemAt: ['$k.koutyeCode', 0] }, amount: { $sum: '$amount' } } }
+  ]);
+
+  const perAgent = {};
+  const byPlatform = {};
+  const byType = {};
+  refAgg.forEach(r => {
+    const c = r._id.code;
+    perAgent[c] = perAgent[c] || { referrals: 0, byPlatform: {} };
+    perAgent[c].referrals += r.n;
+    perAgent[c].byPlatform[r._id.platform] = (perAgent[c].byPlatform[r._id.platform] || 0) + r.n;
+    byPlatform[r._id.platform] = (byPlatform[r._id.platform] || 0) + r.n;
+    const t = r._id.type || 'customer';
+    byType[t] = (byType[t] || 0) + r.n;
+  });
+  const comMap = {};
+  comByAgent.forEach(c => { comMap[c._id] = Math.round(c.amount * 100) / 100; });
+  /* Every status the model allows, so a figure is never missing just because
+     nothing has reached that stage yet. `total` is what the team has
+     genuinely generated: rejected and expired lines are shown but not added. */
+  const commissions = { pending: 0, validated: 0, approved: 0, paid: 0, rejected: 0, expired: 0, total: 0, count: 0 };
+  comAgg.forEach(c => {
+    const st = c._id.status || 'pending';
+    commissions[st] = Math.round(((commissions[st] || 0) + c.amount) * 100) / 100;
+    if (st !== 'rejected' && st !== 'expired') {
+      commissions.total = Math.round((commissions.total + c.amount) * 100) / 100;
+      commissions.count += c.n;
+    }
+  });
+
+  return {
+    agents: agents.map(a => ({
+      code: a.koutyeCode,
+      name: (a.user && a.user.name) || '',
+      status: a.status,
+      tier: a.tier,
+      linkedAt: a.organizationLinkedAt || null,
+      referrals: (perAgent[a.koutyeCode] || {}).referrals || 0,
+      byPlatform: (perAgent[a.koutyeCode] || {}).byPlatform || {},
+      commissionGenerated: comMap[a.koutyeCode] || 0
+    })),
+    referrals: { total: refAgg.reduce((x, r) => x + r.n, 0), byPlatform, byType },
+    commissions,
+    payoutsEnabled: false
+  };
+}
+
 /* --------------------------------------------------- the partner's own door */
 router.post('/:slug/open', async (req, res) => {
   try {
@@ -125,7 +208,12 @@ router.post('/:slug/open', async (req, res) => {
     org.lastOpenedAt = new Date();
     await org.save();
 
-    const [s, d] = await Promise.all([storeStats(org.slug), driverStats(org.slug)]);
+    const [s, d, team] = await Promise.all([
+      storeStats(org.slug), driverStats(org.slug),
+      /* A failure here must not lock a partner out of the dashboard they
+         already had - shops and drivers still show. */
+      teamStats(org.slug).catch(e => ({ error: e.message }))
+    ]);
     res.json({
       success: true,
       organization: { slug: org.slug, name: org.name, fullName: org.fullName,
@@ -137,7 +225,8 @@ router.post('/:slug/open', async (req, res) => {
         withAgent: s.withAgent,
         drivers: d.count,
         driversReachable: d.reachable
-      }
+      },
+      team
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -206,5 +295,91 @@ router.post('/:slug/status', requirePin, async (req, res) => {
   }
 });
 
+/* ---------------------------------------------- his console: the org's Ajan */
+function cleanCodes(list) {
+  return (Array.isArray(list) ? list : String(list || '').split(/[\s,;]+/))
+    .map(c => String(c || '').trim()).filter(Boolean).slice(0, 200);
+}
+function codeRe(c) {
+  return new RegExp('^' + c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+}
+
+router.get('/:slug/agents', requirePin, async (req, res) => {
+  try {
+    const org = await Organization.findOne({ slug: slugRe(req.params.slug) }).lean();
+    if (!org) return res.status(404).json({ success: false, message: 'No such organization' });
+    res.json({ success: true, slug: org.slug, ...(await teamStats(org.slug)) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/* Link Ajan to the organisation, by their code.
+   ⛔ An agent already working for ANOTHER organisation is refused unless
+   `move: true` - moving somebody between partners is a decision, never a
+   side effect of pasting a list.
+   History is NOT rewritten: people an agent recruited before today stay
+   credited as they were. Only recruits from now on carry this organisation.
+   `dryRun: true` reports what would happen and changes nothing - so he can
+   check Christopher's list against our records before approving it. */
+router.post('/:slug/agents', requirePin, async (req, res) => {
+  try {
+    const Koutye = require('../models/Koutye');
+    const org = await Organization.findOne({ slug: slugRe(req.params.slug) });
+    if (!org) return res.status(404).json({ success: false, message: 'No such organization' });
+    const codes = cleanCodes(req.body && req.body.codes);
+    if (!codes.length) return res.status(400).json({ success: false, message: 'No agent codes given' });
+    const move = !!(req.body && req.body.move);
+    const dryRun = !!(req.body && req.body.dryRun);
+
+    const result = [];
+    for (const c of codes) {
+      const k = await Koutye.findOne({ koutyeCode: codeRe(c) }).populate('user', 'name');
+      if (!k) { result.push({ code: c, outcome: 'not_found' }); continue; }
+      const cur = k.organization || '';
+      if (cur && cur.toLowerCase() === org.slug.toLowerCase()) {
+        result.push({ code: k.koutyeCode, name: k.user && k.user.name, outcome: 'already_linked' }); continue;
+      }
+      if (cur && !move) {
+        result.push({ code: k.koutyeCode, name: k.user && k.user.name, outcome: 'belongs_to_other', organization: cur }); continue;
+      }
+      if (!dryRun) {
+        k.organization = org.slug;
+        k.organizationLinkedAt = new Date();
+        await k.save();
+      }
+      result.push({ code: k.koutyeCode, name: k.user && k.user.name, status: k.status,
+                    outcome: dryRun ? 'would_link' : (cur ? 'moved' : 'linked'), from: cur || undefined });
+    }
+    res.json({ success: true, slug: org.slug, dryRun, result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/:slug/agents/remove', requirePin, async (req, res) => {
+  try {
+    const Koutye = require('../models/Koutye');
+    const org = await Organization.findOne({ slug: slugRe(req.params.slug) }).lean();
+    if (!org) return res.status(404).json({ success: false, message: 'No such organization' });
+    const codes = cleanCodes(req.body && req.body.codes);
+    const result = [];
+    for (const c of codes) {
+      const k = await Koutye.findOne({ koutyeCode: codeRe(c), organization: slugRe(org.slug) });
+      if (!k) { result.push({ code: c, outcome: 'not_linked' }); continue; }
+      /* Unlinking does not touch anything already recruited: those people
+         stay credited to the organisation they were recruited for. */
+      k.organization = '';
+      k.organizationLinkedAt = undefined;
+      await k.save();
+      result.push({ code: k.koutyeCode, outcome: 'unlinked' });
+    }
+    res.json({ success: true, slug: org.slug, result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
 module.exports.parseDriverRows = parseDriverRows;
+module.exports.teamStats = teamStats;
