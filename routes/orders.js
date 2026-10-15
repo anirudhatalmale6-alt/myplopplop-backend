@@ -353,14 +353,30 @@ router.put('/:id/status', protect, [
 });
 
 // ─── ASSIGN RIDER TO ORDER ───
-router.put('/:id/assign-rider', protect, authorize('admin', 'merchant'), async function(req, res) {
+/* 🛑 15 Oct 2026: ADMIN ONLY, and only to an approved driver.
+   It used to accept ANY merchant, without checking that the order belonged to
+   that merchant's shop - and anyone becomes a merchant by opening a shop. A
+   stranger could make himself the "rider" on somebody else's order, read the
+   customer's phone and address, mark it delivered and be credited the
+   driver's 80% (services/completeOrder.js). No page calls this route; drivers
+   are assigned by dispatch (services/deliveryDispatch.js). */
+router.put('/:id/assign-rider', protect, authorize('admin'), async function(req, res) {
   try {
     var order = await Order.findById(req.params.id);
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
+    var rider = await User.findById(req.body.riderId).select('role isActive');
+    if (!rider || rider.role !== 'driver' || rider.isActive === false) {
+      return res.status(400).json({ success: false, message: 'That user is not an active driver' });
+    }
+    var DriverProfile = require('../models/DriverProfile');
+    var dp = await DriverProfile.findOne({ user: rider._id }).select('status');
+    if (!dp || dp.status !== 'approved') {
+      return res.status(400).json({ success: false, message: 'That driver is not approved' });
+    }
 
-    order.rider = req.body.riderId;
+    order.rider = rider._id;
     await order.save();
 
     res.json({ success: true, message: 'Rider assigned', data: order });
