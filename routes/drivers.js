@@ -184,9 +184,16 @@ router.get('/nearby', async (req, res) => {
           $maxDistance: parseInt(maxDistance) // meters
         }
       }
-    }).populate('user', 'name phone').limit(20);
+    }).select('currentLocation vehicleType').limit(20);
 
-    res.json({ success: true, count: drivers.length, drivers });
+    /* 🛑 15 Oct 2026: PUBLIC, so it says only how many drivers are near and
+       roughly where (about 1 km). It returned each driver's name, phone,
+       licence number, the paths of their ID and licence photos, and their
+       exact live GPS position to anyone. No page needs more than this. */
+    res.json({ success: true, count: drivers.length, drivers: drivers.map(d => ({
+      vehicleType: d.vehicleType,
+      approxLocation: (d.currentLocation && d.currentLocation.coordinates || []).map(c => Math.round(c * 100) / 100)
+    })) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

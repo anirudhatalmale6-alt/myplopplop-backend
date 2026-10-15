@@ -116,6 +116,12 @@ router.get('/:orderId/driver-status', protect, async function(req, res) {
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
+    /* 🛑 15 Oct 2026: only the customer, the shop, or an admin. */
+    var me = String(req.user._id);
+    var shop = await Store.findById(order.store).select('owner');
+    if (String(order.customer) !== me && !(shop && String(shop.owner) === me) && req.user.role !== 'admin') {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
 
     if (!order.msouwoutRideId) {
       return res.json({ success: true, data: { driverStatus: 'not_dispatched' } });

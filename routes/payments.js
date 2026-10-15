@@ -260,9 +260,14 @@ router.post('/moncash/ride', protect, async (req, res) => {
 // GET /api/payments/moncash/verify?orderId=xxx
 router.get('/moncash/verify', async (req, res) => {
   try {
-    const { orderId, transactionId: mcTransId } = req.query;
-    if (!orderId && !mcTransId) {
-      return res.status(400).json({ success: false, message: 'orderId or transactionId required' });
+    /* 🛑 15 Oct 2026: the OUR reference (orderId) is required, and the gateway
+       must confirm THAT reference for at least the amount. Called with only a
+       transactionId, the lookup below became "any pending transaction", and a
+       genuinely paid but unrelated reference could complete somebody else's
+       top-up - with no amount check at all. */
+    const { orderId } = req.query;
+    if (!orderId || typeof orderId !== 'string') {
+      return res.status(400).json({ success: false, message: 'orderId required' });
     }
 
     const transaction = await Transaction.findOne({
@@ -274,11 +279,19 @@ router.get('/moncash/verify', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Transaction not found or already processed' });
     }
 
-    const sipResult = await verifySolutionIPPayment(orderId || mcTransId);
+    const sipResult = await verifySolutionIPPayment(orderId);
+    const paidAmount = Number(sipResult && sipResult.montant);
+    const amountOk = isFinite(paidAmount) && paidAmount + 1 >= Number(transaction.amount);
+
+    if (sipResult.status === true && sipResult.trans_status === 'ok' && !amountOk) {
+      console.warn('[MONCASH VERIFY] ' + orderId + ': gateway reports ' + (sipResult && sipResult.montant) + ', expected ' + transaction.amount);
+      return res.status(400).json({ success: false, message: 'The amount paid does not match' });
+    }
 
     if (sipResult.status === true && sipResult.trans_status === 'ok') {
-      transaction.status = 'completed';
-      await transaction.save();
+      // atomic: two simultaneous verifies cannot both credit
+      const claimed = await Transaction.findOneAndUpdate({ _id: transaction._id, status: 'pending' }, { $set: { status: 'completed' } });
+      if (!claimed) return res.status(409).json({ success: false, message: 'Already processed' });
 
       if (transaction.type === 'topup') {
         await User.findByIdAndUpdate(transaction.user, {
@@ -416,30 +429,38 @@ router.post('/natcash/ride', protect, async (req, res) => {
 // POST /api/payments/wallet/ride
 router.post('/wallet/ride', protect, async (req, res) => {
   try {
+    /* 🛑 15 Oct 2026: only the ride's OWN customer, only once. It accepted any
+       user and any ride, already paid or not, and credited the driver again
+       on every call. Both the "only once" and the wallet deduction are now
+       single atomic updates, so two taps at the same moment cannot pay twice. */
     const { rideId } = req.body;
     const ride = await Ride.findById(rideId);
-    if (!ride) {
+    if (!ride || String(ride.customer) !== String(req.user._id)) {
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
-
-    const user = await User.findById(req.user._id);
+    if (ride.paymentStatus === 'paid') {
+      return res.status(409).json({ success: false, message: 'This ride is already paid' });
+    }
     const amount = ride.fare.total;
 
-    if (user.wallet.balance < amount) {
+    const user = await User.findOneAndUpdate(
+      { _id: req.user._id, 'wallet.balance': { $gte: amount } },
+      { $inc: { 'wallet.balance': -amount } }, { new: true });
+    if (!user) {
+      const u = await User.findById(req.user._id).select('wallet');
       return res.status(400).json({
         success: false,
-        message: 'Insufficient wallet balance. Need ' + amount + ' HTG, have ' + user.wallet.balance + ' HTG'
+        message: 'Insufficient wallet balance. Need ' + amount + ' HTG, have ' + ((u && u.wallet && u.wallet.balance) || 0) + ' HTG'
       });
     }
-
-    // Deduct from wallet
-    user.wallet.balance -= amount;
-    await user.save();
-
-    // Mark ride as paid
-    ride.paymentStatus = 'paid';
-    ride.paymentMethod = 'wallet';
-    await ride.save();
+    const marked = await Ride.findOneAndUpdate(
+      { _id: ride._id, paymentStatus: { $ne: 'paid' } },
+      { $set: { paymentStatus: 'paid', paymentMethod: 'wallet' } });
+    if (!marked) {
+      // somebody paid it in the same instant: give the money back
+      await User.findByIdAndUpdate(req.user._id, { $inc: { 'wallet.balance': amount } });
+      return res.status(409).json({ success: false, message: 'This ride is already paid' });
+    }
 
     // Create transaction records
     await Transaction.create({
@@ -453,9 +474,10 @@ router.post('/wallet/ride', protect, async (req, res) => {
       description: 'Ride payment from wallet'
     });
 
-    // Driver earning (75%)
+    // Driver earning: the share stored on the ride (80% on a delivery, 75% on a passenger ride)
     if (ride.driver) {
-      const driverEarning = ride.fare.driverEarning || Math.round(amount * 0.75);
+      const rate = require('../utils/fareCalculator').commissionRateFor(ride.type);
+      const driverEarning = ride.fare.driverEarning || Math.round(amount * (1 - rate));
       await User.findByIdAndUpdate(ride.driver, {
         $inc: { 'wallet.balance': driverEarning }
       });
@@ -465,7 +487,7 @@ router.post('/wallet/ride', protect, async (req, res) => {
         type: 'earning',
         amount: driverEarning,
         status: 'completed',
-        description: 'Ride earning (75%)'
+        description: 'Ride earning (wallet payment)'
       });
     }
 

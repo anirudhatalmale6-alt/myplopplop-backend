@@ -242,14 +242,18 @@ router.post('/pay', async (req, res) => {
 });
 
 // GET /api/utility/history?phone=XXXX
-router.get('/history', async (req, res) => {
+/* 🛑 15 Oct 2026: LOGGED IN, and only your OWN phone. It was public and
+   matched the phone as a pattern, so ?phone=5 returned everybody's prepaid
+   electricity tokens - which are money. No page calls this route. */
+router.get('/history', protect, async (req, res) => {
   try {
-    const { phone, page = 1, limit = 20 } = req.query;
-    if (!phone) {
-      return res.status(400).json({ success: false, message: 'Phone number required' });
+    const { page = 1, limit = 20 } = req.query;
+    const mine = String(req.user.phone || '').replace(/\D/g, '').slice(-8);
+    if (mine.length < 8) {
+      return res.status(400).json({ success: false, message: 'No phone number on this account' });
     }
-
-    const cleanPhone = phone.replace(/[^0-9+]/g, '');
+    // the stored phone ends with these 8 digits (whatever prefix it was typed with)
+    const cleanPhone = mine + '$';
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [transactions, total] = await Promise.all([
       UtilityTransaction.find({ phone: { $regex: cleanPhone } })
