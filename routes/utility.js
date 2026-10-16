@@ -67,16 +67,19 @@ router.post('/create-transaction', async (req, res) => {
   try {
     const {
       utility_type, customer_name, phone, email, zone,
-      account_number, meter_number, amount, payment_method,
+      account_number, meter_number, payment_method,
       koutye_code
     } = req.body;
+    // a NUMBER: "500" + 25 used to make the text "50025"
+    const amount = Math.round(Number(req.body.amount));
 
     if (!utility_type || !customer_name || !phone || !amount || !payment_method) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
 
-    if (amount < 100) {
-      return res.status(400).json({ success: false, message: 'Minimum amount is 100 HTG' });
+    // 16 Oct 2026: a real number of HTG, 100 to 100,000 (it was not checked for NaN or size)
+    if (!(Number.isFinite(Number(amount)) && Number(amount) >= 100 && Number(amount) <= 100000)) {
+      return res.status(400).json({ success: false, message: 'Amount must be between 100 and 100,000 HTG' });
     }
 
     if (utility_type === 'edh' && !meter_number) {
@@ -200,7 +203,7 @@ router.post('/pay', async (req, res) => {
         payment_method: transaction.payment_method,
         provider_reference: result.transaction_id || '',
         amount: transaction.total_amount,
-        status: gatewayConfirmed(result) ? 'completed' : 'pending',
+        status: gatewayConfirmed(result, transaction.total_amount) ? 'completed' : 'pending',
         raw_response: result,
         webhook_source: 'verify'
       });
@@ -209,7 +212,7 @@ router.post('/pay', async (req, res) => {
          'ok' - the same endpoint, in the same file, is checked for 'ok'
          fifty lines below. A utility payment confirmed down this path could
          never be marked paid. */
-      if (gatewayConfirmed(result)) {
+      if (gatewayConfirmed(result, transaction.total_amount) && transaction.payment_status !== 'paid') {
         transaction.payment_status = 'paid';
         transaction.processing_status = 'processing';
         transaction.provider_reference = result.transaction_id || '';
@@ -297,7 +300,8 @@ async function handlePaymentWebhook(method, req, res) {
     if (refId) {
       try {
         provider = await verifySolutionIPPayment(refId);
-        confirmed = gatewayConfirmed(provider);
+        const expect = await UtilityTransaction.findOne({ reference_id: refId }).select('total_amount');
+        confirmed = !!expect && gatewayConfirmed(provider, expect.total_amount);
       } catch (e) {
         // Provider unreachable. Fail closed and say so loudly - a webhook we
         // could not confirm must never move money.

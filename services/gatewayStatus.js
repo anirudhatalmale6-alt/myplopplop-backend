@@ -21,8 +21,19 @@
  * payment confirmed down the first path could therefore never be marked paid.
  * One definition exists now so the two can never disagree again.
  */
-function gatewayConfirmed(data) {
-  return !!(data && data.status === true && data.trans_status === 'ok');
+function gatewayConfirmed(data, expectedAmount) {
+  if (!(data && data.status === true && data.trans_status === 'ok')) return false;
+  /* 16 Oct 2026: and for HOW MUCH. A reference paid with less than we asked
+     for (or with no readable amount) is not a payment - the 20 HTG for a
+     50,000 HTG top-up class of bug. Callers pass what they charged. */
+  if (expectedAmount != null) {
+    const got = Number(data.montant);
+    if (!(Number.isFinite(got) && got + 0.5 >= Number(expectedAmount))) {
+      console.error('[PAYMENT AMOUNT MISMATCH] gateway reports ' + data.montant + ', we charged ' + expectedAmount);
+      return false;
+    }
+  }
+  return true;
 }
 
 module.exports = { gatewayConfirmed };

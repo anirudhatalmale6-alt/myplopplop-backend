@@ -557,6 +557,14 @@ router.post('/payout/request', protect, async (req, res) => {
     if (koutye.status !== 'active') {
       return res.status(400).json({ success: false, message: 'Koutye account is not active' });
     }
+    /* 16 Oct 2026: ONE request at a time per agent. Two taps at the same
+       moment both read the same balance and both created a payout for it. */
+    const now = new Date();
+    const locked = await Koutye.findOneAndUpdate(
+      { _id: koutye._id, $or: [{ payoutBusyUntil: null }, { payoutBusyUntil: { $lt: now } }] },
+      { $set: { payoutBusyUntil: new Date(now.getTime() + 30000) } });
+    if (!locked) return res.status(409).json({ success: false, message: 'A payout request is already being made. Try again in a moment.' });
+    try {
 
     const validatedTotal = await KoutyeCommission.aggregate([
       { $match: { koutye: koutye._id, ...PERSONAL, status: { $in: ['validated', 'approved'] } } },
@@ -571,8 +579,9 @@ router.post('/payout/request', protect, async (req, res) => {
     const pendingTotal = pendingPayouts[0]?.total || 0;
     const withdrawable = available - pendingTotal;
 
-    const { amount, method, destinationAccount, notes } = req.body;
-    const requestAmount = amount || withdrawable;
+    const { method, destinationAccount, notes } = req.body;
+    const requestAmount = req.body.amount != null && req.body.amount !== '' ? Math.round(Number(req.body.amount)) : withdrawable;
+    if (!Number.isFinite(requestAmount)) return res.status(400).json({ success: false, message: 'Invalid amount' });
 
     if (requestAmount < MIN_PAYOUT_HTG) {
       return res.status(400).json({
@@ -607,6 +616,9 @@ router.post('/payout/request', protect, async (req, res) => {
         message: 'Payout request submitted. Processing: 24-48h.'
       }
     });
+    } finally {
+      await Koutye.updateOne({ _id: koutye._id }, { $set: { payoutBusyUntil: null } }).catch(() => {});
+    }
   } catch (err) {
     console.error('Koutye payout request error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -707,6 +719,11 @@ router.patch('/admin/payouts/:id/mark-paid', protect, authorize('admin'), async 
     if (!['pending', 'approved'].includes(payout.status)) {
       return res.status(400).json({ success: false, message: `Cannot mark-paid payout with status: ${payout.status}` });
     }
+    /* 16 Oct 2026: claimed ONCE - a second click (or a second admin) used to
+       run the whole thing again and add the amount to the agent's paid total twice. */
+    const claim = await KoutyePayout.findOneAndUpdate({ _id: payout._id, status: { $in: ['pending', 'approved'] } },
+      { $set: { status: 'paid', paidAt: new Date() } });
+    if (!claim) return res.status(409).json({ success: false, message: 'This payout was already marked paid.' });
 
     const commissions = await KoutyeCommission.find({
       koutye: payout.koutye,

@@ -73,6 +73,8 @@ const koutyeSchema = new mongoose.Schema({
   organization: { type: String, trim: true, default: '', index: true, maxlength: 80 },
   organizationLinkedAt: Date,
   lastPayoutDate: Date,
+  // 16 Oct 2026: a short lock so two payout requests cannot both spend one balance
+  payoutBusyUntil: Date,
   suspendedReason: String,
   suspendedAt: Date
 }, {
