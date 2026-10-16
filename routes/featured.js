@@ -20,16 +20,21 @@ router.post('/boost', protect, authorize('merchant'), async function(req, res) {
       return res.status(400).json({ success: false, message: 'Type must be: product, shop, or banner' });
     }
 
-    weeks = parseInt(weeks) || 1;
+    /* 16 Oct 2026: weeks was any integer - a negative number made the price
+       negative and the "payment" ADDED money to the wallet. 1-52 only, and the
+       balance is taken in ONE conditional update (two taps cannot both pass). */
+    weeks = weeks == null || weeks === '' ? 1 : Number(weeks);
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) {
+      return res.status(400).json({ success: false, message: 'weeks must be 1 to 52' });
+    }
     var price = PRICES[type] * weeks;
+    if (!(price > 0)) return res.status(400).json({ success: false, message: 'Invalid price' });
 
-    var user = await User.findById(req.user._id);
-    if (user.wallet.balance < price) {
+    var user = await User.findOneAndUpdate({ _id: req.user._id, 'wallet.balance': { $gte: price } },
+      { $inc: { 'wallet.balance': -price } }, { new: true });
+    if (!user) {
       return res.status(400).json({ success: false, message: 'Balans ensifizan. Bezwen ' + price + ' HTG' });
     }
-
-    user.wallet.balance -= price;
-    await user.save();
 
     var endDate = new Date();
     endDate.setDate(endDate.getDate() + (weeks * 7));

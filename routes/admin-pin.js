@@ -720,9 +720,19 @@ router.post('/commissions/:id/:action(approve|reject)', async (req, res) => {
       return res.json({ success: true, already: c.status, id: c._id });
     }
     const approving = req.params.action === 'approve';
-    c.status = approving ? 'approved' : 'rejected';
-    if (approving) c.approvedAt = new Date();
-    await c.save();
+    /* 🛑 16 Oct 2026: a 48HoursReady package commission was written BEFORE any
+       payment (and on a price the buyer typed). Approve one only if its
+       payment is recorded as completed. */
+    if (approving && c.serviceType === 'package') {
+      const Transaction = require('../models/Transaction');
+      const paid = c.transactionId && await Transaction.findOne({ reference: c.transactionId, status: 'completed' });
+      if (!paid) return res.status(409).json({ error: 'No completed payment for this package - do not approve.' });
+    }
+    /* one decision, once: a second tap or a second admin cannot change it */
+    const won = await KoutyeCommission.findOneAndUpdate({ _id: c._id, status: 'pending' },
+      { $set: approving ? { status: 'approved', approvedAt: new Date() } : { status: 'rejected' } }, { new: true });
+    if (!won) return res.json({ success: true, already: 'decided', id: c._id });
+    c.status = won.status;
 
     /* Keep the agent's own running totals honest. pendingEarnings drops either
        way; on a rejection the money leaves totalEarnings as well, or the agent

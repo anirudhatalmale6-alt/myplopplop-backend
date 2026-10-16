@@ -764,16 +764,20 @@ router.post('/:id/contribute',
         }
       }
 
+      // 16 Oct 2026: never a zero/negative charge, and the wallet is debited in
+      // ONE conditional update (a negative fee used to ADD money).
+      if (!(totalCharge > 0) || !(amount > 0)) {
+        return res.status(400).json({ success: false, message: 'Invalid contribution amount' });
+      }
       if (req.body.method === 'wallet') {
-        var user = await User.findById(req.user._id);
-        if (user.wallet.balance < totalCharge) {
+        var user = await User.findOneAndUpdate({ _id: req.user._id, 'wallet.balance': { $gte: totalCharge } },
+          { $inc: { 'wallet.balance': -totalCharge } }, { new: true });
+        if (!user) {
           return res.status(400).json({
             success: false,
             message: 'Insufficient wallet balance. Need ' + totalCharge + ' HTG'
           });
         }
-        user.wallet.balance -= totalCharge;
-        await user.save();
       }
 
       var paymentStatus = req.body.method === 'wallet' ? 'confirmed' : 'pending';
@@ -1174,12 +1178,26 @@ router.post('/payouts/:payoutId/send', protect, async function(req, res) {
       return res.status(400).json({ success: false, message: 'Payout must be approved first' });
     }
 
+    /* 🛑 16 Oct 2026: claim the payout ONCE (two taps used to credit twice),
+       and put into a wallet ONLY money the platform actually holds - the
+       WALLET contributions of this cycle. Cash/MonCash/NatCash contributions
+       are confirmed by the group's own admin on a reference nobody checks; that
+       money was collected by the group, so that part is settled outside the
+       app, not created out of nothing in a withdrawable wallet. */
+    var claimed = await SolGroup.findOneAndUpdate(
+      { _id: group._id, payouts: { $elemMatch: { _id: payout._id, status: 'pending' } } },
+      { $set: { 'payouts.$.status': 'completed', 'payouts.$.paidAt': new Date() } });
+    if (!claimed) return res.status(409).json({ success: false, message: 'This payout was already sent.' });
+    var walletHeld = group.contributions
+      .filter(function (c) { return c.cycle === payout.cycle && c.status === 'confirmed' && c.method === 'wallet'; })
+      .reduce(function (s, c) { return s + (Number(c.amount) || 0); }, 0);
+    var creditNow = Math.max(0, Math.min(Number(payout.netAmount) || 0, walletHeld));
+    var settleOutside = Math.max(0, (Number(payout.netAmount) || 0) - creditNow);
+
     // Credit recipient wallet
-    var recipient = await User.findById(payout.recipient);
-    if (recipient) {
-      recipient.wallet.balance += payout.netAmount;
-      await recipient.save();
-    }
+    var recipient = creditNow > 0
+      ? await User.findByIdAndUpdate(payout.recipient, { $inc: { 'wallet.balance': creditNow } }, { new: true })
+      : await User.findById(payout.recipient);
 
     var recipientMember = group.members.find(function(m) {
       return m.user.toString() === payout.recipient.toString();
@@ -1196,12 +1214,12 @@ router.post('/payouts/:payoutId/send', protect, async function(req, res) {
     await Transaction.create({
       user: payout.recipient,
       type: 'earning',
-      amount: payout.netAmount,
+      amount: creditNow,
       currency: 'HTG',
       method: payout.method,
       status: 'completed',
       reference: 'SOL-' + group._id + '-P' + payout.cycle,
-      description: 'Sol payout: ' + group.name + ' - Cycle ' + payout.cycle
+      description: 'Sol payout: ' + group.name + ' - Cycle ' + payout.cycle + (settleOutside > 0 ? ' (+' + settleOutside + ' HTG to settle outside: collected in cash/MonCash by the group)' : '')
     });
 
     if (payout.platformFee > 0) {
@@ -1265,6 +1283,8 @@ router.post('/payouts/:payoutId/send', protect, async function(req, res) {
         recipient: recipient ? { name: recipient.name, phone: recipient.phone } : payout.recipient,
         cycle: payout.cycle,
         netPayout: payout.netAmount,
+        creditedToWallet: creditNow,
+        settleOutside: settleOutside,
         groupStatus: group.status,
         nextCycle: group.status === 'completed' ? null : group.currentCycle
       }

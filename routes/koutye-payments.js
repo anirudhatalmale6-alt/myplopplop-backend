@@ -51,7 +51,14 @@ const { PLATFORM_FEES } = require('../services/referral');
 
 // ─── 48HoursReady Package Purchase ───
 // POST /api/koutye-payments/package/purchase
-router.post('/package/purchase', async (req, res) => {
+/* 🛑 16 Oct 2026: CLOSED. No page uses these two routes, and the purchase took
+   the PRICE from the request, needed no login, and wrote a pending 10% agent
+   commission BEFORE any payment - which the console could then approve.
+   They answer 410 until 48HoursReady packages are sold through a priced,
+   paid flow. */
+router.post('/package/purchase', (req, res) => res.status(410).json({ success: false, message: 'Not in use.' }));
+router.get('/package/verify', (req, res) => res.status(410).json({ success: false, message: 'Not in use.' }));
+router.post('/package/purchase-old-disabled', async (req, res) => {
   try {
     const { packageType, amount, paymentMethod, customerName, customerPhone, customerEmail, koutyeCode } = req.body;
 
@@ -167,7 +174,7 @@ router.post('/package/purchase', async (req, res) => {
 
 // ─── Verify 48HR Package Payment (MonCash callback) ───
 // GET /api/koutye-payments/package/verify?orderId=xxx
-router.get('/package/verify', async (req, res) => {
+router.get('/package/verify-old-disabled', async (req, res) => {
   try {
     const { orderId } = req.query;
     if (!orderId) {

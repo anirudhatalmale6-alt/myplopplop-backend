@@ -119,7 +119,9 @@ const solGroupSchema = new mongoose.Schema({
   },
   gracePeriodDays: {
     type: Number,
-    default: 2
+    default: 2,
+    min: 0,
+    max: 60
   },
   lateFeeEnabled: {
     type: Boolean,
@@ -127,7 +129,9 @@ const solGroupSchema = new mongoose.Schema({
   },
   lateFeeAmount: {
     type: Number,
-    default: 0
+    default: 0,
+    min: 0,          // 16 Oct 2026: a negative fee ADDED money to the payer's wallet
+    max: 1000000
   },
   startDate: Date,
   endDate: Date,
@@ -152,13 +156,13 @@ const solGroupSchema = new mongoose.Schema({
   totalDistributed: { type: Number, default: 0 },
 
   // Platform fees
-  cycleFeePercent: { type: Number, default: 2 }, // 2% per cycle
+  cycleFeePercent: { type: Number, default: 2, min: 0, max: 20 }, // 2% per cycle (never negative: 16 Oct 2026)
   withdrawalFeePercent: { type: Number, default: 1.5 }, // 1.5% on withdrawal
   accessFee: { type: Number, default: 150 }, // 150 HTG/month
 
   // Deposit lock - require upfront payment to join
   depositLockEnabled: { type: Boolean, default: false },
-  depositLockAmount: { type: Number, default: 0 },
+  depositLockAmount: { type: Number, default: 0, min: 0 },
 
   // Payout blocking - skip members who haven't paid
   payoutBlockingEnabled: { type: Boolean, default: true },
@@ -171,7 +175,7 @@ const solGroupSchema = new mongoose.Schema({
 
   // Trust layer (optional)
   trustLayerEnabled: { type: Boolean, default: false },
-  trustFeePerMember: { type: Number, default: 0 }, // $2-$5 per member per cycle
+  trustFeePerMember: { type: Number, default: 0, min: 0, max: 100000 }, // $2-$5 per member per cycle
 
   // Group status
   status: {
