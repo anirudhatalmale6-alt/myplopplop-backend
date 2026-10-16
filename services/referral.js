@@ -215,7 +215,13 @@ const PLATFORM_FEES = {
      therefore worked out on a fee that does not exist and the agent was
      overpaid by a quarter - 8.33 instead of 6.67 on a 333 HTG fare.
      ⛔ If the fare split ever changes, this number changes with it. */
-  'msouwout':     { feeRate: 0.20, koutyeRate: 0.10, label: '10% of 20% platform fee' },
+  /* 15 Oct 2026, Jeffery: "MsouWout: 3% of the eligible completed and paid
+     ride fare", to the Ajan who recruited the DRIVER. 3% of the fare out of
+     MsouWout's 20% is 15% OF THE FEE: 0.20 * 0.15 = 0.03. Funded from the
+     platform's cut - never the driver's 80% or DASH.
+     Nothing calls this until MsouWout's KOUTYE_RIDE_COMMISSION switch is on
+     (rideCommission below is the only caller). */
+  'msouwout':     { feeRate: 0.20, koutyeRate: 0.15, label: '3% of the ride fare (15% of the 20% platform fee)' },
   'myplopplop':   { feeRate: 0.10, koutyeRate: 0.10, label: '10% of 10% platform fee' },
   'utility':      { feeRate: 0.05, koutyeRate: 0.10, label: '10% of 5% service fee' },
   'sol':          { feeRate: 0.02, koutyeRate: 0.10, label: '10% of 2% cycle fee' },
@@ -272,7 +278,10 @@ async function payCommissionForUser(userId, opts) {
    on what "the agent's share" means, and two copies of this would drift the
    way the two rate tables already did. */
 async function payOnReferral(referral, platform, amount, o) {
-  const fees = PLATFORM_FEES[platform];
+  /* o.rates: a caller that knows the exact rule for THIS sale (the MyPlopPlop
+     order rule, utils/marketFees.js) passes {feeRate, koutyeRate}; everyone
+     else gets the platform's table. */
+  const fees = (o && o.rates) || PLATFORM_FEES[platform];
   if (!fees) return { commissioned: false, reason: 'bad_platform' };
   try {
     const Koutye = require('../models/Koutye');
@@ -393,7 +402,111 @@ async function commissionForTicketSale(opts) {
   }
 }
 
+/* ═══ MSOUWOUT: 3% OF A PAID RIDE TO THE DRIVER'S AJAN (15 Oct 2026) ═══════
+   Jeffery: "For now, the 3% ride commission should go to the Ajan who
+   recruited the driver. The driver must be verified and approved, and the
+   ride must be completed and paid. If another Ajan recruited the passenger,
+   preserve that information for reporting, but do not generate a second
+   standard commission on the same ride."
+
+   MsouWout (Postgres) decides "completed AND paid AND approved driver AND not
+   a test ride" - it is the only side that knows - and calls this once per
+   ride. This side finds the driver's Ajan and pays through the same
+   payOnReferral every platform uses, so the Enterprise rule (credited to the
+   organisation, never also to the Ajan) applies here too.
+   🔑 transactionId 'MW-<tracking code>': the same ride reported twice earns
+   once.                                                                      */
+async function rideCommission(o) {
+  const pk = phoneKey(o.driverPhone);
+  if (!pk) return { commissioned: false, reason: 'no_driver_phone' };
+  const fare = Number(o.fare);
+  if (!(fare > 0)) return { commissioned: false, reason: 'no_fare' };
+  if (!o.rideRef) return { commissioned: false, reason: 'no_ride_ref' };
+
+  const driverRef = await liveOrExpire(await KoutyeReferral.findOne({
+    'referredEntity.phoneKey': pk, 'referredEntity.type': 'driver',
+    platform: 'msouwout', status: 'active'
+  }));
+
+  /* Reporting only - looked up whether or not the driver has an Ajan. */
+  let passengerKoutyeCode = '';
+  const ppk = phoneKey(o.passengerPhone);
+  if (ppk) {
+    const pRef = await liveOrExpire(await KoutyeReferral.findOne({
+      'referredEntity.phoneKey': ppk, 'referredEntity.type': { $ne: 'driver' },
+      platform: 'msouwout', status: 'active'
+    }));
+    if (pRef) passengerKoutyeCode = pRef.koutyeCode;
+  }
+
+  if (!driverRef) return { commissioned: false, reason: 'driver_has_no_ajan', passengerKoutyeCode };
+
+  const out = await payOnReferral(driverRef, 'msouwout', fare, {
+    transactionId: 'MW-' + String(o.rideRef),
+    serviceType: 'ride',
+    description: 'MsouWout ride ' + o.rideRef
+  });
+  if (out.commissioned && out.commissionId && passengerKoutyeCode) {
+    const KoutyeCommission = require('../models/KoutyeCommission');
+    await KoutyeCommission.updateOne({ _id: out.commissionId }, { $set: { passengerKoutyeCode } })
+      .catch(function () {});
+  }
+  return Object.assign({}, out, { passengerKoutyeCode });
+}
+
+/* ═══ CANCELLED OR REFUNDED -> THE COMMISSION IS TAKEN BACK (15 Oct 2026) ══
+   Jeffery asked for "correct handling of cancellations and refunds", and his
+   PDF: commission only on completed, paid sales, "excluding ... refunded
+   amounts". Until now nothing anywhere reversed a commission.
+
+   Every commission line written for this transactionId that has NOT been
+   paid becomes 'reversed' (kept, with the reason and the date - never
+   deleted). The referral's totals and, for an independent Ajan, the personal
+   counters are taken back by the same amount, so every balance still adds
+   up.
+   ⛔ A line already PAID is not touched: money that has left cannot be
+   unwritten by a status. It is reported back as `alreadyPaid`, for a person
+   to recover. (Enterprise payouts are off, so today nothing can be paid.)
+   Safe to call twice: a reversed line is not reversed again.               */
+async function reverseCommission(o) {
+  const KoutyeCommission = require('../models/KoutyeCommission');
+  const Koutye = require('../models/Koutye');
+  if (!o || !o.transactionId) return { reversed: 0, reason: 'no_transaction' };
+  const lines = await KoutyeCommission.find({ transactionId: String(o.transactionId) });
+  let reversed = 0, amount = 0;
+  const alreadyPaid = [];
+  for (const c of lines) {
+    if (c.status === 'reversed' || c.status === 'rejected' || c.status === 'expired') continue;
+    if (c.status === 'paid') { alreadyPaid.push({ id: String(c._id), amount: c.amount }); continue; }
+    const r = await KoutyeCommission.updateOne(
+      { _id: c._id, status: c.status },          // only if nobody changed it meanwhile
+      { $set: { status: 'reversed', reversedAt: new Date(),
+                reversalReason: String(o.reason || 'refunded').slice(0, 120) } });
+    if (!r.modifiedCount) continue;
+    reversed++; amount += c.amount;
+    const ref = await KoutyeReferral.findById(c.referral);
+    if (ref) {
+      ref.totalCommissionEarned = Math.max(0, (ref.totalCommissionEarned || 0) - c.amount);
+      ref.commissionCount = Math.max(0, (ref.commissionCount || 0) - 1);
+      await ref.save().catch(function () {});
+    }
+    if (!c.organization) {
+      const k = await Koutye.findById(c.koutye);
+      if (k) {
+        k.stats.totalEarnings = Math.max(0, (k.stats.totalEarnings || 0) - c.amount);
+        k.stats.pendingEarnings = Math.max(0, (k.stats.pendingEarnings || 0) - c.amount);
+        const pb = k.platformBreakdown && k.platformBreakdown[c.platform];
+        if (pb) pb.earnings = Math.max(0, (pb.earnings || 0) - c.amount);
+        await k.save().catch(function () {});
+      }
+    }
+  }
+  return { reversed, amount: Math.round(amount * 100) / 100, alreadyPaid };
+}
+
 module.exports = {
+  rideCommission,
+  reverseCommission,
   attachReferral,
   activeReferralFor,
   activeReferralForPhone,

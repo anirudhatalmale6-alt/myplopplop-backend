@@ -9,32 +9,12 @@ const { protect, authorize } = require('../middleware/auth');
 // ─── RELEASE ELIGIBLE PAYOUTS (cron/admin trigger) ───
 // Moves funds from pending_balance to available_balance for delivered orders past hold period
 router.post('/release', protect, authorize('admin'), async function(req, res) {
+  /* 16 Oct 2026: one release routine for the timer and this button
+     (services/orderLifecycle.releaseMatured). This used to read-modify-save,
+     so a click while the timer ran could release the same order twice. */
   try {
-    var now = new Date();
-    var orders = await Order.find({
-      payoutStatus: 'pending',
-      payoutAvailableAt: { $lte: now },
-      status: 'delivered',
-      paymentStatus: 'paid'
-    }).populate('store');
-
-    var released = 0;
-    for (var i = 0; i < orders.length; i++) {
-      var order = orders[i];
-      var merchant = await User.findById(order.store.owner);
-      if (!merchant) continue;
-
-      merchant.wallet.pending_balance -= order.merchantEarning;
-      if (merchant.wallet.pending_balance < 0) merchant.wallet.pending_balance = 0;
-      merchant.wallet.available_balance += order.merchantEarning;
-      await merchant.save();
-
-      order.payoutStatus = 'available';
-      await order.save();
-      released++;
-    }
-
-    res.json({ success: true, released: released, message: released + ' orders released to available balance' });
+    var out = await require('../services/orderLifecycle').releaseMatured(new Date());
+    res.json({ success: true, released: out.shops, drivers: out.drivers, message: out.shops + ' orders released to available balance' });
   } catch (err) {
     console.error('Release payouts error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -123,7 +103,7 @@ router.post('/request', protect, authorize('merchant', 'driver'), async function
       });
     }
 
-    var amount = Number(req.body.amount) || funds;
+    var amount = Math.floor(Number(req.body.amount) || funds);
     if (amount > funds) {
       amount = funds;
     }
@@ -134,9 +114,12 @@ router.post('/request', protect, authorize('merchant', 'driver'), async function
     var method = req.body.method || 'moncash';
     var recipient = (req.body.recipient || user.phone || '').toString().trim();
 
-    // Hold the money out of the wallet while the request is pending
-    user.wallet[bucket] -= amount;
-    await user.save();
+    // Hold the money out of the wallet while the request is pending.
+    // 16 Oct 2026: ONE conditional update - two taps at once used to both read
+    // the same balance and both create a withdrawal for it.
+    var held = await User.findOneAndUpdate({ _id: req.user._id, ['wallet.' + bucket]: { $gte: amount } },
+      { $inc: { ['wallet.' + bucket]: -amount } }, { new: true });
+    if (!held) return res.status(409).json({ success: false, message: 'Balans lan chanje. Rechaje paj la.' });
 
     var transaction = await Transaction.create({
       user: req.user._id,
@@ -175,21 +158,29 @@ router.put('/process/:transactionId', protect, authorize('admin'), async functio
     }
 
     var action = req.body.action; // 'approve' or 'reject'
+    /* 16 Oct 2026: only a PENDING request can be decided, once. Rejecting
+       twice used to put the money back twice. */
     if (action === 'approve') {
-      transaction.status = 'completed';
-      transaction.reference = req.body.reference || '';
-      await transaction.save();
+      var ref = String(req.body.reference || '').trim();
+      if (ref.length < 4) return res.status(400).json({ success: false, message: 'Enter the MonCash/NatCash transfer reference.' });
+      transaction = await Transaction.findOneAndUpdate({ _id: transaction._id, type: 'withdrawal', status: 'pending' },
+        { $set: { status: 'completed', reference: ref } }, { new: true });
     } else if (action === 'reject') {
-      transaction.status = 'failed';
-      await transaction.save();
-      // Refund to whichever bucket the money was taken from
-      var user = await User.findById(transaction.user);
-      if (user) {
+      transaction = await Transaction.findOneAndUpdate({ _id: transaction._id, type: 'withdrawal', status: 'pending' },
+        { $set: { status: 'failed' } }, { new: true });
+      if (transaction) {
         var bucket = transaction.sourceBucket || 'available_balance';
-        user.wallet[bucket] = (user.wallet[bucket] || 0) + transaction.amount;
-        await user.save();
+        await User.updateOne({ _id: transaction.user }, { $inc: { ['wallet.' + bucket]: transaction.amount } });
       }
+    } else {
+      return res.status(400).json({ success: false, message: 'action must be approve or reject' });
     }
+    if (!transaction) return res.status(409).json({ success: false, message: 'This payout was already decided.' });
+    try {
+      await require('../models/ActivityLog').create({ actor: req.user._id, actorName: req.user.name, actorRole: req.user.role,
+        action: 'payout.' + action, targetType: 'Transaction', targetId: transaction._id,
+        detail: { amount: transaction.amount, reference: transaction.reference || '', user: String(transaction.user) } });
+    } catch (e) {}
 
     res.json({ success: true, data: transaction });
   } catch (err) {

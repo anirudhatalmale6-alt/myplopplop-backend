@@ -8,8 +8,27 @@ const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const { protect, authorize } = require('../middleware/auth');
 const { calculateFare } = require('../utils/fareCalculator');
+const marketFees = require('../utils/marketFees');
+const lifecycle = require('../services/orderLifecycle');
+
+/* What each party may see of an order (16 Oct 2026). The delivery code goes
+   ONLY to the customer (and an admin): the shop and the driver must get it
+   from the customer at the door, or it proves nothing. */
+function publicOrder(order, role) {
+  var o = order && order.toObject ? order.toObject() : Object.assign({}, order);
+  if (role !== 'customer' && role !== 'admin') delete o.deliveryPin;
+  delete o.pinAttempts;
+  return o;
+}
 
 // ─── PLACE ORDER ───
+/* The fee the pages must display, from the one place the server charges it.
+   Public: it is the price list, not anybody's data. */
+router.get('/fees', (req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  res.json({ success: true, serviceFeePct: marketFees.serviceFeePct() });
+});
+
 router.post('/', protect, [
   body('storeId').notEmpty().withMessage('Store is required'),
   body('items').isArray({ min: 1 }).withMessage('At least one item required'),
@@ -83,12 +102,15 @@ router.post('/', protect, [
       }
     }
 
-    // 5% service fee, the same one checkout shows and charges. Computed here
-    // rather than trusted from the page.
-    var serviceFee = Math.round(subtotal * 0.05);
+    // The buyer's service fee (5% today; utils/marketFees.js), the same one
+    // checkout shows and charges. Computed here rather than trusted from the page.
+    var serviceFee = marketFees.serviceFeeFor(subtotal);
 
-    var commissionRate = store.commissionRate || 10;
-    var commission = Math.round(subtotal * commissionRate / 100);
+    // The SELLER fee, taken from the merchant's settlement (utils/marketFees.js).
+    // With no pricing setting it is exactly the old store.commissionRate rule.
+    var sellerFee = marketFees.sellerFeeFor(store, subtotal);
+    var commissionRate = sellerFee.pct;
+    var commission = sellerFee.fee;
     var merchantEarning = subtotal - commission;
 
     // Diaspora fee: +3-5% on subtotal
@@ -114,13 +136,15 @@ router.post('/', protect, [
     var referralBonus = 0;
     var customer = await User.findById(req.user._id);
 
-    // Process wallet payment
+    // Wallet payment: taken in ONE conditional update, so two orders placed at
+    // the same moment cannot both spend the same balance (16 Oct 2026).
     if (req.body.paymentMethod === 'wallet') {
-      if (customer.wallet.balance < total) {
+      var debited = await User.findOneAndUpdate(
+        { _id: req.user._id, 'wallet.balance': { $gte: total } },
+        { $inc: { 'wallet.balance': -total } });
+      if (!debited) {
         return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
       }
-      customer.wallet.balance -= total;
-      await customer.save();
     }
 
     // Payout hold: new vendors get 72h, others get 24h
@@ -140,6 +164,8 @@ router.post('/', protect, [
       serviceFee: serviceFee,
       subtotal: subtotal,
       commission: commission,
+      sellerFeePct: commissionRate,
+      sellerFeeRule: sellerFee.rule,
       diasporaFee: diasporaFee,
       total: total,
       merchantEarning: merchantEarning,
@@ -147,7 +173,9 @@ router.post('/', protect, [
       deliveryPlatformCut: deliveryPlatformCut,
       deliveryDriverCut: deliveryDriverCut,
       paymentMethod: req.body.paymentMethod,
-      paymentStatus: req.body.paymentMethod === 'wallet' ? 'paid' : 'pending',
+      // ALWAYS pending here: "paid" is set only by services/orderLifecycle
+      // confirmPayment (the gateway's answer, or the wallet debit above).
+      paymentStatus: 'pending',
       payoutStatus: 'held',
       payoutAvailableAt: payoutAvailableAt,
       isDiasporaOrder: isDiaspora,
@@ -162,30 +190,28 @@ router.post('/', protect, [
       amount: total,
       currency: 'HTG',
       method: req.body.paymentMethod,
-      status: req.body.paymentMethod === 'wallet' ? 'completed' : 'pending',
+      status: 'pending',
       reference: order.orderNumber,
+      order: order._id,
       description: 'Order from ' + store.name
     });
 
-    // Update store stats
+    /* 16 Oct 2026: the shop is NOT alerted here and the sale is NOT counted:
+       an unpaid order is not an order yet. Both happen when the payment is
+       confirmed (services/orderLifecycle.js). Revenue is counted on delivery. */
     store.stats.totalOrders += 1;
-    store.stats.totalRevenue += merchantEarning;
     await store.save();
+
+    var io = req.app.get('io');
+    if (req.body.paymentMethod === 'wallet') {
+      // the money already left the wallet above: confirm it like any payment
+      await lifecycle.confirmPayment(order, { status: true, trans_status: 'ok', montant: total, method: 'wallet' }, { io: io, source: 'wallet' });
+      order = await Order.findById(order._id);
+    }
 
     await order.populate('store', 'name logo phone');
 
-    // Emit real-time notification to merchant
-    var io = req.app.get('io');
-    if (io) {
-      io.to('store_' + store._id).emit('new_order', {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
-        total: order.total,
-        itemCount: orderItems.length
-      });
-    }
-
-    res.status(201).json({ success: true, data: order });
+    res.status(201).json({ success: true, data: publicOrder(order, 'customer') });
   } catch (err) {
     console.error('Place order error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -242,7 +268,7 @@ router.get('/:id', protect, async function(req, res) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    res.json({ success: true, data: order });
+    res.json({ success: true, data: publicOrder(order, isCustomer ? 'customer' : isAdmin ? 'admin' : 'other') });
   } catch (err) {
     console.error('Get order error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -250,92 +276,156 @@ router.get('/:id', protect, async function(req, res) {
 });
 
 // ─── UPDATE ORDER STATUS (merchant/rider/admin) ───
+/* 16 Oct 2026: every status change goes through services/orderLifecycle.js.
+   - confirmed / preparing / ready: the SHOP, one step at a time, PAID orders only
+   - cancelled: customer (before preparing), shop (before pickup), admin
+     (before delivery); a paid order opens a refund for an admin to approve
+   - picked_up / delivered: NOT here. Pickup is confirmed by the shop with the
+     driver's pickup code (POST /:id/handover); delivery needs the customer's
+     code (driver: PUT /api/rides/:id/status; pickup orders: POST
+     /:id/complete-pickup) or an admin exception (POST /:id/admin-complete). */
 router.put('/:id/status', protect, [
   body('status').isIn(['confirmed', 'preparing', 'ready', 'picked_up', 'delivering', 'delivered', 'cancelled'])
 ], async function(req, res) {
   try {
+    var errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
     var order = await Order.findById(req.params.id);
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
     var store = await Store.findById(order.store);
     var isMerchant = store && store.owner.toString() === req.user._id.toString();
-    var isRider = order.rider && order.rider.toString() === req.user._id.toString();
     var isAdmin = req.user.role === 'admin';
     var isCustomer = order.customer.toString() === req.user._id.toString();
-
-    if (!isMerchant && !isRider && !isAdmin) {
-      // Customer can only cancel
-      if (isCustomer && req.body.status === 'cancelled') {
-        order.status = 'cancelled';
-        order.cancelledBy = 'customer';
-        order.cancelReason = req.body.reason || '';
-        order.cancelledAt = new Date();
-        await order.save();
-        return res.json({ success: true, data: order });
-      }
-      return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
-
-    order.status = req.body.status;
-
-    // Set timestamps
-    if (req.body.status === 'confirmed') order.confirmedAt = new Date();
-    if (req.body.status === 'preparing') order.preparedAt = new Date();
-    if (req.body.status === 'picked_up') order.pickedUpAt = new Date();
-    if (req.body.status === 'delivered') {
-      // Shared with the delivery driver's own "delivered", so the money moves
-      // the same way whichever end closes the order. See services/completeOrder.
-      await require('../services/completeOrder').markOrderDelivered(order);
-    }
-    if (req.body.status === 'cancelled') {
-      order.cancelledBy = isMerchant ? 'merchant' : 'system';
-      order.cancelReason = req.body.reason || '';
-      order.cancelledAt = new Date();
-      // Refund if paid
-      if (order.paymentStatus === 'paid' && order.paymentMethod === 'wallet') {
-        var customer = await User.findById(order.customer);
-        if (customer) {
-          customer.wallet.balance += order.total;
-          await customer.save();
-        }
-        order.paymentStatus = 'refunded';
-      }
-    }
-
-    await order.save();
-
-    // Emit real-time status update
+    var to = req.body.status;
     var io = req.app.get('io');
+    var out;
+
+    if (to === 'cancelled') {
+      var role = isAdmin ? 'admin' : isMerchant ? 'merchant' : isCustomer ? 'customer' : null;
+      if (!role) return res.status(403).json({ success: false, message: 'Not authorized' });
+      out = await lifecycle.cancelOrder(order, { role: role, reason: req.body.reason, actor: req.user, io: io });
+    } else if (to === 'confirmed' || to === 'preparing' || to === 'ready') {
+      if (!isMerchant && !isAdmin) return res.status(403).json({ success: false, message: 'Not authorized' });
+      out = await lifecycle.merchantAdvance(order, to, req.user, io);
+    } else {
+      return res.status(409).json({ success: false, message: to === 'delivered'
+        ? 'Delivery is completed with the customer\'s 4-digit code, not from here.'
+        : 'Pickup is confirmed by the shop with the driver\'s pickup code.' });
+    }
+    if (!out.ok) return res.status(out.code || 409).json({ success: false, message: out.message });
     if (io) {
-      io.to('order_' + order._id).emit('order_status_update', {
-        orderId: order._id,
-        status: order.status,
-        updatedAt: new Date()
-      });
-      io.to('store_' + order.store).emit('order_status_update', {
-        orderId: order._id,
-        status: order.status
-      });
+      io.to('store_' + out.order.store).emit('order_status_update', { orderId: out.order._id, status: out.order.status });
     }
-
-    // AUTOMATIC DISPATCH: the moment the store marks a delivery order "ready",
-    // create a delivery ride and offer it to the nearest driver — no button, no staff.
-    if (req.body.status === 'ready' && order.deliveryType === 'delivery' && !order.rideId) {
-      try {
-        var deliveryDispatch = require('../services/deliveryDispatch');
-        deliveryDispatch.createDeliveryRideForOrder(order, store, io).catch(function (e) {
-          console.error('Auto-dispatch error:', e.message);
-        });
-      } catch (dispErr) {
-        console.error('Auto-dispatch load error:', dispErr.message);
-      }
-    }
-
-    res.json({ success: true, data: order });
+    res.json({ success: true, data: publicOrder(out.order, isCustomer ? 'customer' : isAdmin ? 'admin' : 'other'), refund: out.refund ? { id: out.refund._id, amount: out.refund.amount, status: out.refund.status } : undefined });
   } catch (err) {
     console.error('Update order status error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+/* ─── ONE PAYMENT FOR A BASKET OF SEVERAL SHOPS (16 Oct 2026) ───
+   Checkout creates one order per shop, then calls this with their ids. They
+   all get the same paymentGroup (the first order's number), which is the
+   reference the customer pays under, so confirming that payment confirms
+   every shop's order. Only the customer's own unpaid orders, placed within
+   the last hour. */
+router.post('/basket', protect, async function(req, res) {
+  try {
+    var ids = Array.isArray(req.body && req.body.orderIds) ? req.body.orderIds.slice(0, 20) : [];
+    if (!ids.length) return res.status(400).json({ success: false, message: 'orderIds required' });
+    var orders = await Order.find({ _id: { $in: ids }, customer: req.user._id, paymentStatus: 'pending', status: 'pending',
+      createdAt: { $gte: new Date(Date.now() - 3600 * 1000) } }).sort({ createdAt: 1 });
+    if (orders.length !== ids.length) return res.status(400).json({ success: false, message: 'Some orders cannot be grouped (not yours, already paid, or too old)' });
+    var group = orders[0].orderNumber;
+    await Order.updateMany({ _id: { $in: orders.map(function (o) { return o._id; }) } }, { $set: { paymentGroup: group } });
+    var total = orders.reduce(function (t, o) { return t + (Number(o.total) || 0); }, 0);
+    res.json({ success: true, data: { paymentRef: group, total: total, orders: orders.length } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+/* ─── PICKUP VERIFICATION: the shop types the driver's pickup code ───
+   The code is shown only to the driver who accepted the delivery, so the
+   wrong driver cannot collect the parcel. Records the time and the driver's
+   last known position. */
+router.post('/:id/handover', protect, async function(req, res) {
+  try {
+    var order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    var store = await Store.findById(order.store);
+    if (!store || String(store.owner) !== String(req.user._id)) return res.status(403).json({ success: false, message: 'Not authorized' });
+    if (order.status !== 'ready' || !order.rideId) return res.status(409).json({ success: false, message: 'There is no driver collecting this order yet.' });
+    var Ride = require('../models/Ride');
+    var ride = await Ride.findById(order.rideId);
+    if (!ride || !ride.driver || ['accepted', 'picking_up'].indexOf(ride.status) === -1) return res.status(409).json({ success: false, message: 'No driver has accepted this delivery yet.' });
+    if (!ride.pickupCode || String(req.body.code || '').trim() !== String(ride.pickupCode)) {
+      return res.status(400).json({ success: false, message: 'Wrong pickup code. Ask the driver to show the code in their app.' });
+    }
+    var DriverProfile = require('../models/DriverProfile');
+    var dp = await DriverProfile.findOne({ user: ride.driver }).select('currentLocation status');
+    if (!dp || dp.status !== 'approved') return res.status(409).json({ success: false, message: 'This driver is not approved. Do not hand over the order.' });
+    var now = new Date();
+    var r = await Ride.findOneAndUpdate({ _id: ride._id, status: { $in: ['accepted', 'picking_up'] }, pickupVerifiedAt: null },
+      { $set: { status: 'in_progress', pickedUpAt: now, pickupVerifiedAt: now, pickupLocation: dp.currentLocation && dp.currentLocation.coordinates ? { type: 'Point', coordinates: dp.currentLocation.coordinates } : undefined } }, { new: true });
+    if (!r) return res.status(409).json({ success: false, message: 'Already handed over.' });
+    var o2 = await Order.findOneAndUpdate({ _id: order._id, status: 'ready' }, { $set: { status: 'picked_up', pickedUpAt: now } }, { new: true });
+    await lifecycle.log(req.user, 'order.picked_up', o2 || order, { driver: ride.driver, verified: 'pickup_code' });
+    require('./notifications').sendPushToUser(order.customer, 'Kòmand #' + order.orderNumber + ' an wout', 'Chofè a pran kòmand ou. Prepare kòd livrezon ou an.', { url: '/order-status.html?id=' + order._id }).catch(function () {});
+    res.json({ success: true, data: publicOrder(o2 || order, 'other') });
+  } catch (err) {
+    console.error('Handover error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+/* ─── A PICKUP (customer collects at the shop): the customer's code ─── */
+router.post('/:id/complete-pickup', protect, async function(req, res) {
+  try {
+    var order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    var store = await Store.findById(order.store);
+    if (!store || String(store.owner) !== String(req.user._id)) return res.status(403).json({ success: false, message: 'Not authorized' });
+    if (order.deliveryType !== 'pickup') return res.status(409).json({ success: false, message: 'A delivery order is completed by the driver with the customer\'s code.' });
+    if (order.status !== 'ready') return res.status(409).json({ success: false, message: 'Mark the order ready first.' });
+    var pin = await lifecycle.checkPin(order, req.body.pin);
+    if (!pin.ok) return res.status(pin.code).json({ success: false, message: pin.message });
+    var out = await lifecycle.completeDelivery(order, { via: 'pickup_pin', actor: req.user });
+    if (!out.ok) return res.status(out.code).json({ success: false, message: out.message });
+    res.json({ success: true, data: publicOrder(out.order, 'other') });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+/* ─── ADMIN EXCEPTION: the customer cannot give the code ───
+   Admin only, a written reason, recorded in the audit log with who did it. */
+router.post('/:id/admin-complete', protect, authorize('admin'), async function(req, res) {
+  try {
+    var reason = String((req.body && req.body.reason) || '').trim();
+    if (reason.length < 10) return res.status(400).json({ success: false, message: 'Write the reason (at least 10 characters).' });
+    var order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    var Ride = require('../models/Ride');
+    var ride = order.rideId ? await Ride.findById(order.rideId) : null;
+    var out = await lifecycle.completeDelivery(order, { via: 'admin_exception', actor: req.user, reason: reason, ride: ride });
+    if (!out.ok) return res.status(out.code).json({ success: false, message: out.message });
+    res.json({ success: true, data: publicOrder(out.order, 'admin') });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+/* ─── ADMIN: a refund after delivery (wrong, damaged or missing goods) ─── */
+router.post('/:id/refund', protect, authorize('admin'), async function(req, res) {
+  try {
+    var order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    var out = await lifecycle.openRefundForDelivered(order, req.user, req.body || {});
+    if (!out.ok) return res.status(out.code).json({ success: false, message: out.message });
+    res.status(201).json({ success: true, data: out.refund });
+  } catch (err) {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });

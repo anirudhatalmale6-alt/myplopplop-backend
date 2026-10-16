@@ -53,9 +53,18 @@ const koutyeCommissionSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'expired'],
+    /* 'reversed' added 15 Oct 2026: the sale behind it was cancelled or
+       refunded before the commission was paid. Kept, never deleted, so the
+       history shows it was earned and why it was taken back. */
+    enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'expired', 'reversed'],
     default: 'pending'
   },
+  reversedAt: Date,
+  reversalReason: String,
+  /* MsouWout: the Ajan who recruited the PASSENGER, when one did. Jeffery,
+     15 Oct: "preserve that information for reporting, but do not generate a
+     second standard commission on the same ride." Reporting only. */
+  passengerKoutyeCode: String,
   description: String,
   sourceTransaction: {
     type: String

@@ -196,7 +196,7 @@ async function teamStats(slug) {
     { $group: { _id: { code: null, status: '$status' }, amount: { $sum: '$amount' }, n: { $sum: 1 } } }
   ]);
   const comByAgent = await KoutyeCommission.aggregate([
-    { $match: { organization: re, status: { $nin: ['rejected', 'expired'] } } },
+    { $match: { organization: re, status: { $nin: ['rejected', 'expired', 'reversed'] } } },
     { $lookup: { from: 'koutyes', localField: 'koutye', foreignField: '_id', as: 'k' } },
     { $group: { _id: { $arrayElemAt: ['$k.koutyeCode', 0] }, amount: { $sum: '$amount' } } }
   ]);
@@ -239,11 +239,11 @@ async function teamStats(slug) {
   /* Every status the model allows, so a figure is never missing just because
      nothing has reached that stage yet. `total` is what the team has
      genuinely generated: rejected and expired lines are shown but not added. */
-  const commissions = { pending: 0, validated: 0, approved: 0, paid: 0, rejected: 0, expired: 0, total: 0, count: 0 };
+  const commissions = { pending: 0, validated: 0, approved: 0, paid: 0, rejected: 0, expired: 0, reversed: 0, total: 0, count: 0 };
   comAgg.forEach(c => {
     const st = c._id.status || 'pending';
     commissions[st] = Math.round(((commissions[st] || 0) + c.amount) * 100) / 100;
-    if (st !== 'rejected' && st !== 'expired') {
+    if (st !== 'rejected' && st !== 'expired' && st !== 'reversed') {
       commissions.total = Math.round((commissions.total + c.amount) * 100) / 100;
       commissions.count += c.n;
     }

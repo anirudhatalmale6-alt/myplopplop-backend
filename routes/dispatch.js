@@ -16,6 +16,12 @@ async function callMsouWout(path, body) {
 }
 
 router.post('/:orderId/request-driver', protect, async function(req, res) {
+  /* 16 Oct 2026: CLOSED. This booked a separate MsouWout CASH ride for a shop
+     order - a second delivery path with no delivery code, no pay-once credit
+     and a customer who may be asked to pay twice. No page calls it. Deliveries
+     are now sent automatically when a PAID order is marked ready
+     (services/deliveryDispatch.js) and verified end to end. */
+  return res.status(410).json({ success: false, message: 'Drivers are sent automatically when a paid order is marked ready.' });
   try {
     var order = await Order.findById(req.params.orderId)
       .populate('store', 'name address phone')

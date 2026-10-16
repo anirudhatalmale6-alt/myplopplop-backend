@@ -7,6 +7,25 @@ const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const { calculateFare } = require('../utils/fareCalculator');
 const { sendPushToUser } = require('./notifications');
+
+/* 16 Oct 2026: what a DRIVER may see of a job. ⛔ Never the customer's
+   delivery code - he must get it from the customer at the door. The pickup
+   code is his own, to show the shop. */
+function forDriver(ride) {
+  if (!ride) return ride;
+  const o = ride.toObject ? ride.toObject() : Object.assign({}, ride);
+  delete o.pin;
+  return o;
+}
+/* The PICKUP code is the driver's, shown to the shop at the counter: if the
+   shop (or anyone else) could read it, the shop could "confirm" a pickup with
+   no driver there. Only the ride's own driver (and an admin) get it. */
+function forCustomer(ride) {
+  if (!ride) return ride;
+  const o = ride.toObject ? ride.toObject() : Object.assign({}, ride);
+  delete o.pickupCode;
+  return o;
+}
 const referralService = require('../services/referral');
 
 const router = express.Router();
@@ -98,9 +117,10 @@ router.post('/', protect, [
 
     const populated = await Ride.findById(ride._id).populate('customer', 'name phone');
 
-    // Emit to socket for nearby drivers (handled in server.js)
+    // Only signed-in, approved drivers are in the 'drivers' room (server.js).
+    // This used to go to EVERY open connection, addresses included (16 Oct 2026).
     if (req.app.get('io')) {
-      req.app.get('io').emit('new_ride', {
+      req.app.get('io').to('drivers').emit('new_ride', {
         rideId: ride._id,
         type: ride.type,
         pickup: ride.pickup,
@@ -168,12 +188,27 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
       }
     }
 
-    ride.driver = req.user._id;
-    ride.status = 'accepted';
-    ride.acceptedAt = new Date();
-    ride.offeredTo = null;
-    ride.offerExpiresAt = null;
-    await ride.save();
+    /* 16 Oct 2026: ONE conditional update. Two drivers accepting at the same
+       instant used to both succeed (read, check, save); now exactly one wins
+       and the other is told the job is gone. A driver who already accepted
+       and dropped this job cannot take it again. */
+    if (ride.order) {
+      const Order = require('../models/Order');
+      const linked = await Order.findById(ride.order).select('status paymentStatus');
+      if (!linked || linked.status === 'cancelled' || linked.paymentStatus !== 'paid') {
+        return res.status(409).json({ success: false, message: 'This order was cancelled or is not paid' });
+      }
+    }
+    const now = new Date();
+    const won = await Ride.findOneAndUpdate(
+      { _id: ride._id, status: 'requested', driver: null, droppedBy: { $ne: req.user._id }, needsDriverPay: { $ne: true },
+        $or: [{ offeredTo: null }, { offeredTo: req.user._id, offerExpiresAt: { $gt: now } }] },
+      { $set: { driver: req.user._id, status: 'accepted', acceptedAt: now, offeredTo: null, offerExpiresAt: null,
+                pickupCode: ride.order ? String(Math.floor(1000 + Math.random() * 9000)) : undefined } },
+      { new: true });
+    if (!won) {
+      return res.status(409).json({ success: false, message: 'Ride already taken' });
+    }
 
     // Link the driver back onto the marketplace order so tracking + payout work.
     if (ride.order) {
@@ -194,11 +229,20 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
         driver: { name: req.user.name, phone: req.user.phone }
       });
     }
-    sendPushToUser(ride.customer, 'Driver Found!', req.user.name + ' is on the way to pick you up', {
-      url: '/rides-tracking.html?id=' + ride._id
-    }).catch(() => {});
+    if (ride.type === 'delivery' && ride.order) {
+      sendPushToUser(ride.customer, 'Chofè jwenn', req.user.name + ' ap ale chèche kòmand ou nan magazen an.', { url: '/order-status.html?id=' + ride.order }).catch(() => {});
+      if (ride.store) {
+        const Store = require('../models/Store');
+        const st = await Store.findById(ride.store).select('owner');
+        if (st) sendPushToUser(st.owner, 'Chofè ap vini', req.user.name + ' ap vin chèche kòmand lan. Mande l kòd ranmasaj li.', { url: '/merchant/orders.html' }).catch(() => {});
+      }
+    } else {
+      sendPushToUser(ride.customer, 'Driver Found!', req.user.name + ' is on the way to pick you up', {
+        url: '/rides-tracking.html?id=' + ride._id
+      }).catch(() => {});
+    }
 
-    res.json({ success: true, ride: populated });
+    res.json({ success: true, ride: forDriver(populated) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -215,12 +259,22 @@ router.get('/my-offer', protect, authorize('driver'), async (req, res) => {
       offerExpiresAt: { $gt: new Date() }
     }).populate('customer', 'name phone').populate('store', 'name');
 
-    const active = await Ride.findOne({
+    let active = await Ride.findOne({
       driver: req.user._id,
       status: { $in: ['accepted', 'picking_up', 'in_progress'] }
     }).populate('customer', 'name phone').populate('store', 'name');
 
-    res.json({ success: true, data: { offer: offer || null, active: active || null } });
+    // A shop delivery accepted before pickup codes existed (16 Oct 2026) gets
+    // one now, once, so the shop can still hand it over.
+    if (active && active.order && !active.pickupCode && ['accepted', 'picking_up'].includes(active.status)) {
+      await Ride.updateOne({ _id: active._id, status: { $in: ['accepted', 'picking_up'] }, $or: [{ pickupCode: null }, { pickupCode: { $exists: false } }] },
+        { $set: { pickupCode: String(Math.floor(1000 + Math.random() * 9000)) } });
+      active = await Ride.findById(active._id).populate('customer', 'name phone').populate('store', 'name');
+    }
+
+    const offerOut = forDriver(offer);
+    if (offerOut) delete offerOut.pickupCode;
+    res.json({ success: true, data: { offer: offerOut || null, active: forDriver(active) || null } });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -245,6 +299,130 @@ router.put('/:id/decline', protect, authorize('driver'), async (req, res) => {
   }
 });
 
+
+/* The two rewards a completed ride/delivery has always paid, unchanged:
+   the old driver-refers-driver ambassador bonus and the LajanMaker agent
+   commission for whoever recruited the driver. Moved here (16 Oct 2026) so
+   the shop-delivery path pays them exactly like the passenger path. */
+async function rewardsAfterRide(reqUser, ride) {
+  const req = { user: reqUser };
+      // Ambassador referral bonus - MyPlopPlop platform fees
+  // 10% of platform fees, only for first 3 months per referred account, with payout cap
+  const driver = await User.findById(req.user._id);
+  if (driver && driver.referredBy) {
+    const referredAt = driver.referredAt || driver.createdAt;
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    const withinWindow = referredAt > threeMonthsAgo;
+
+    if (withinWindow) {
+      const referrer = await User.findById(driver.referredBy);
+      if (referrer) {
+        // Check payout cap for this referred account
+        const platformFeeAmount = ride.fare.commission; // platform's commission portion
+        const referralBonus = Math.round(platformFeeAmount * 0.10); // 10% of platform fees
+        const cap = referrer.referralPayoutCap || 500;
+        const currentPlatformEarnings = referrer.referralEarningsPlatform || 0;
+        const remainingCap = Math.max(0, cap - currentPlatformEarnings);
+        const actualBonus = Math.min(referralBonus, remainingCap);
+
+        if (actualBonus > 0) {
+          await User.findByIdAndUpdate(driver.referredBy, {
+            $inc: {
+              'wallet.balance': actualBonus,
+              referralEarnings: actualBonus,
+              referralEarningsPlatform: actualBonus
+            }
+          });
+          await Transaction.create({
+            user: driver.referredBy,
+            ride: ride._id,
+            type: 'referral',
+            amount: actualBonus,
+            status: 'completed',
+            description: 'Ambassador bonus (10% platform fee) from ' + driver.name + ' - ' + ride.type
+          });
+        }
+      }
+    }
+  }
+
+  /* LajanMaker: the agent who recruited this DRIVER earns a share of the
+     platform's cut of the fare. This is separate from the old ambassador
+     bonus above, which is driver-refers-driver, runs for 3 months and is
+     capped at 500 HTG - a different scheme with a different window that
+     nobody should confuse with the agent programme.
+
+     Keyed on the ride id, so re-sending "delivered" cannot pay twice. */
+  const agentCut = await referralService.payCommissionForUser(req.user._id, {
+    platform: 'myplopplop',
+    serviceType: ride.type === 'delivery' ? 'delivery' : 'ride',
+    amount: ride.fare.total,
+    transactionId: String(ride._id),
+    description: (ride.type === 'delivery' ? 'Delivery ' : 'Ride ') + ride._id
+  });
+  if (agentCut.commissioned) {
+    console.log('Agent ' + agentCut.koutyeCode + ' earned ' + agentCut.amount +
+      ' HTG on ' + ride.type + ' ' + ride._id);
+  }
+    }
+
+
+/* ═══ A SHOP DELIVERY, STEP BY STEP (16 Oct 2026) ════════════════════════════
+   accepted   → picking_up   the driver says he is AT THE SHOP (the shop is told)
+   picking_up → in_progress  NOT the driver: the SHOP types his pickup code
+                             (POST /api/orders/:id/handover), so the wrong driver
+                             cannot collect the parcel
+   in_progress → delivered   only with the CUSTOMER's 4-digit code, checked here
+                             on the server, 5 tries; completion goes through
+                             services/orderLifecycle.js, which credits the shop
+                             and the driver's 80% exactly once
+   accepted / picking_up → cancelled  the driver drops it: the job goes back to
+                             searching, never to him again                   */
+async function shopDeliveryStatus(req, res, ride, status) {
+  const Order = require('../models/Order');
+  const lifecycle = require('../services/orderLifecycle');
+  const io = req.app.get('io');
+  if (status === 'picking_up') {
+    const r = await Ride.findOneAndUpdate({ _id: ride._id, driver: req.user._id, status: 'accepted' }, { $set: { status: 'picking_up' } }, { new: true });
+    if (!r) return res.status(409).json({ success: false, message: 'Cannot change from ' + ride.status + ' to picking_up' });
+    if (ride.store) {
+      const Store = require('../models/Store');
+      const st = await Store.findById(ride.store).select('owner');
+      if (st) sendPushToUser(st.owner, 'Chofè a rive', req.user.name + ' rive pou kòmand lan. Mande l kòd ranmasaj li anvan ou ba li.', { url: '/merchant/orders.html' }).catch(() => {});
+      if (io) io.to('store_' + ride.store).emit('driver_arrived', { orderId: ride.order, rideId: ride._id });
+    }
+    sendPushToUser(ride.customer, 'Chofè a nan magazen an', 'Chofè a rive nan magazen an pou pran kòmand ou.', { url: '/order-status.html?id=' + ride.order }).catch(() => {});
+    return res.json({ success: true, ride: forDriver(r) });
+  }
+  if (status === 'in_progress') {
+    return res.status(409).json({ success: false, code: 'shop_confirms_pickup', message: 'Show your pickup code to the shop. The shop confirms the pickup.' });
+  }
+  if (status === 'cancelled') {
+    const r = await require('../services/deliveryDispatch').returnToSearch(ride._id, req.user._id, req.body.reason || 'driver cancelled', io);
+    if (!r) return res.status(409).json({ success: false, message: 'You can only drop a delivery before you have picked it up' });
+    await lifecycle.log(req.user, 'delivery.driver_dropped', await Order.findById(ride.order), { reason: req.body.reason || '' });
+    return res.json({ success: true, message: 'The delivery goes back to the next driver' });
+  }
+  if (status === 'delivered') {
+    if (ride.status !== 'in_progress') {
+      return res.status(409).json({ success: false, message: 'The shop has not confirmed the pickup yet' });
+    }
+    const order = await Order.findById(ride.order);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const pin = await lifecycle.checkPin(order, req.body.pin);
+    if (!pin.ok) return res.status(pin.code).json({ success: false, code: 'pin_required', message: pin.message });
+    const out = await lifecycle.completeDelivery(order, { via: 'pin', ride: ride, actor: req.user });
+    if (!out.ok) return res.status(out.code).json({ success: false, message: out.message });
+    await DriverProfile.findOneAndUpdate({ user: req.user._id }, { $inc: { totalDeliveries: 1, totalEarnings: out.order.deliveryDriverCut || 0 } });
+    await rewardsAfterRide(req.user, ride);
+    const fresh = await Ride.findById(ride._id);
+    if (io) io.to(`ride_${ride._id}`).emit('ride_status', { rideId: ride._id, status: 'delivered' });
+    return res.json({ success: true, ride: forDriver(fresh), earned: out.order.deliveryDriverCut });
+  }
+  return res.status(400).json({ success: false, message: 'Unknown status' });
+}
+
 // PUT /api/rides/:id/status - Update ride status
 router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
   try {
@@ -254,8 +432,17 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
     if (!ride) {
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
-    if (ride.driver.toString() !== req.user._id.toString()) {
+    if (!ride.driver || ride.driver.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Not your ride' });
+    }
+    /* 16 Oct 2026: a driver rejected or suspended after accepting cannot go on
+       and be paid. */
+    const myProf = await DriverProfile.findOne({ user: req.user._id }).select('status');
+    if (!myProf || myProf.status !== 'approved') {
+      return res.status(403).json({ success: false, message: 'Your driver account is not active' });
+    }
+    if (ride.type === 'delivery' && ride.order) {
+      return shopDeliveryStatus(req, res, ride, status);
     }
 
     // Valid transitions
@@ -328,68 +515,10 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
         type: 'commission',
         amount: ride.fare.commission,
         status: 'completed',
-        description: `Commission (25%) from ${ride.type}`
+        description: 'Platform share (' + Math.round(require('../utils/fareCalculator').commissionRateFor(ride.type) * 100) + '%) from ' + ride.type
       });
 
-      // Ambassador referral bonus - MyPlopPlop platform fees
-      // 10% of platform fees, only for first 3 months per referred account, with payout cap
-      const driver = await User.findById(req.user._id);
-      if (driver && driver.referredBy) {
-        const referredAt = driver.referredAt || driver.createdAt;
-        const threeMonthsAgo = new Date();
-        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-        const withinWindow = referredAt > threeMonthsAgo;
-
-        if (withinWindow) {
-          const referrer = await User.findById(driver.referredBy);
-          if (referrer) {
-            // Check payout cap for this referred account
-            const platformFeeAmount = ride.fare.commission; // platform's commission portion
-            const referralBonus = Math.round(platformFeeAmount * 0.10); // 10% of platform fees
-            const cap = referrer.referralPayoutCap || 500;
-            const currentPlatformEarnings = referrer.referralEarningsPlatform || 0;
-            const remainingCap = Math.max(0, cap - currentPlatformEarnings);
-            const actualBonus = Math.min(referralBonus, remainingCap);
-
-            if (actualBonus > 0) {
-              await User.findByIdAndUpdate(driver.referredBy, {
-                $inc: {
-                  'wallet.balance': actualBonus,
-                  referralEarnings: actualBonus,
-                  referralEarningsPlatform: actualBonus
-                }
-              });
-              await Transaction.create({
-                user: driver.referredBy,
-                ride: ride._id,
-                type: 'referral',
-                amount: actualBonus,
-                status: 'completed',
-                description: 'Ambassador bonus (10% platform fee) from ' + driver.name + ' - ' + ride.type
-              });
-            }
-          }
-        }
-      }
-
-      /* LajanMaker: the agent who recruited this DRIVER earns a share of the
-         platform's cut of the fare. This is separate from the old ambassador
-         bonus above, which is driver-refers-driver, runs for 3 months and is
-         capped at 500 HTG - a different scheme with a different window that
-         nobody should confuse with the agent programme.
-
-         Keyed on the ride id, so re-sending "delivered" cannot pay twice. */
-      const agentCut = await referralService.payCommissionForUser(req.user._id, {
-        platform: 'myplopplop',
-        serviceType: ride.type === 'delivery' ? 'delivery' : 'ride',
-        amount: ride.fare.total,
-        transactionId: String(ride._id),
-        description: (ride.type === 'delivery' ? 'Delivery ' : 'Ride ') + ride._id
-      });
-      if (agentCut.commissioned) {
-        console.log('Agent ' + agentCut.koutyeCode + ' earned ' + agentCut.amount +
-          ' HTG on ' + ride.type + ' ' + ride._id);
-      }
+      await rewardsAfterRide(req.user, ride);
     }
     if (status === 'cancelled') {
       ride.cancelledAt = new Date();
@@ -420,7 +549,7 @@ router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
       }).catch(() => {});
     }
 
-    res.json({ success: true, ride });
+    res.json({ success: true, ride: forDriver(ride) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -439,6 +568,15 @@ router.put('/:id/cancel', protect, async (req, res) => {
     if (['delivered', 'cancelled'].includes(ride.status)) {
       return res.status(400).json({ success: false, message: 'Cannot cancel this ride' });
     }
+    // A shop delivery is cancelled by cancelling the ORDER, with its rules
+    // (16 Oct 2026): before the shop starts preparing, and with a refund if paid.
+    if (ride.order) {
+      const Order = require('../models/Order');
+      const order = await Order.findById(ride.order);
+      const out = await require('../services/orderLifecycle').cancelOrder(order, { role: 'customer', reason: req.body.reason, actor: req.user, io: req.app.get('io') });
+      if (!out.ok) return res.status(out.code || 409).json({ success: false, message: out.message });
+      return res.json({ success: true, ride: forCustomer(await Ride.findById(ride._id)), refund: out.refund ? { amount: out.refund.amount, status: out.refund.status } : undefined });
+    }
 
     ride.status = 'cancelled';
     ride.cancelledAt = new Date();
@@ -450,7 +588,7 @@ router.put('/:id/cancel', protect, async (req, res) => {
       req.app.get('io').to(`ride_${ride._id}`).emit('ride_cancelled', { rideId: ride._id });
     }
 
-    res.json({ success: true, ride });
+    res.json({ success: true, ride: forCustomer(ride) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -481,7 +619,7 @@ router.put('/:id/rate', protect, async (req, res) => {
     } else {
       return res.status(403).json({ success: false, message: 'Not part of this ride' });
     }
-    res.json({ success: true, ride });
+    res.json({ success: true, ride: String(ride.customer) === String(req.user._id) ? forCustomer(ride) : forDriver(ride) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -510,7 +648,9 @@ router.get('/', protect, async (req, res) => {
 
     const total = await Ride.countDocuments(query);
 
-    res.json({ success: true, count: rides.length, total, page: parseInt(page), rides });
+    // 16 Oct 2026: a driver's own ride list carried the customer's delivery code
+    const isDrv = req.user.role === 'driver';
+    res.json({ success: true, count: rides.length, total, page: parseInt(page), rides: rides.map(isDrv ? forDriver : forCustomer) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -533,14 +673,16 @@ router.get('/available', protect, authorize('driver'), async (req, res) => {
     }
 
     const rides = await Ride.find({
-      status: 'requested',
+      status: 'requested', needsDriverPay: { $ne: true },
       type: { $in: myProfile.services && myProfile.services.length ? myProfile.services : ['delivery'] }
     })
       .populate('customer', 'name phone')
       .sort({ createdAt: -1 })
       .limit(50);
 
-    res.json({ success: true, count: rides.length, rides });
+    // never the customer's delivery code, never another driver's pickup code
+    const out = rides.map(function (r) { const o = forDriver(r); delete o.pickupCode; return o; });
+    res.json({ success: true, count: out.length, rides: out });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -579,6 +721,7 @@ router.get('/:id', protect, async (req, res) => {
     }
     const out = ride.toObject();
     if (!isCustomer && req.user.role !== 'admin') delete out.pin;
+    if (!isDriver && req.user.role !== 'admin') delete out.pickupCode;
     res.json({ success: true, ride: out });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

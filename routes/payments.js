@@ -53,8 +53,14 @@ async function verifySolutionIPPayment(referenceId) {
 // The browser is not allowed to declare an order paid — we ask the gateway
 // ourselves, from here, and check the amount matches before touching anything.
 router.post('/order/verify', protect, async (req, res) => {
+  /* 16 Oct 2026: through services/orderLifecycle.js confirmPayment, which
+     checks the gateway's amount against the WHOLE basket (one payment for
+     several shops), marks every shop's order paid with one atomic update
+     each, pays the agents and alerts the shops. Safe to call any number of
+     times - the server's payment poller calls the same function. */
   try {
     const Order = require('../models/Order');
+    const lifecycle = require('../services/orderLifecycle');
     const order = await Order.findById(req.body.orderId);
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
@@ -65,90 +71,21 @@ router.post('/order/verify', protect, async (req, res) => {
     if (order.paymentStatus === 'paid') {
       return res.json({ success: true, alreadyPaid: true, paymentStatus: 'paid' });
     }
-
-    const result = await verifySolutionIPPayment(order.orderNumber);
-    if (!result || result.status !== true || result.trans_status !== 'ok') {
+    const ref = order.paymentGroup || order.orderNumber;
+    const result = await verifySolutionIPPayment(ref);
+    const out = await lifecycle.confirmPayment(order, result, { io: req.app.get('io'), source: 'customer_return' });
+    if (!out.ok) {
       return res.status(400).json({
         success: false,
         paymentStatus: order.paymentStatus,
-        message: (result && result.message) || 'Payment not confirmed by the gateway'
+        message: out.reason === 'amount_mismatch' ? 'The amount paid does not match this order'
+          : ((result && result.message) || 'Payment not confirmed by the gateway')
       });
     }
-
-    // Never mark an order paid on a smaller payment than the order is worth.
-    const paid = Number(result.montant);
-    if (isFinite(paid) && paid > 0 && paid + 1 < order.total) {
-      console.warn('Order ' + order.orderNumber + ': gateway reports ' + paid +
-        ' but the order is ' + order.total);
-      return res.status(400).json({
-        success: false,
-        message: 'The amount paid does not match this order'
-      });
-    }
-
-    order.paymentStatus = 'paid';
-    order.paidAt = new Date();
-    await order.save();
-
-    // The order already opened a pending payment transaction when it was
-    // placed. Complete that one — a second row would show the shopper the same
-    // payment twice in their history.
-    const pending = await Transaction.findOne({
-      reference: order.orderNumber, type: 'payment', status: 'pending'
-    });
-    if (pending) {
-      pending.status = 'completed';
-      pending.method = result.method || pending.method;
-      await pending.save();
-    } else {
-      await Transaction.create({
-        user: order.customer,
-        type: 'payment',
-        amount: order.total,
-        currency: 'HTG',
-        method: order.paymentMethod || 'moncash',
-        status: 'completed',
-        reference: order.orderNumber,
-        description: 'Payment for order ' + order.orderNumber
-      });
-    }
-
-    /* The LajanMaker agent earns his share now that the money is genuinely in.
-       Nothing on the order path used to do this at all, so an agent could sign
-       up a shop that traded every day and never see a gourde.
-
-       Paid to the agent who signed up the SHOP, not the shopper. A sale
-       generates one platform fee and it is shared once; the shop is what the
-       agent recruited and what keeps earning. The customer's own agent is still
-       recorded against them - say the word and a customer's agent can be paid
-       instead of, or as well as, the shop's.
-
-       Keyed on the order number, so re-verifying a paid order cannot pay twice. */
-    try {
-      const Store = require('../models/Store');
-      const shop = await Store.findById(order.store).select('owner name');
-      if (shop && shop.owner) {
-        const commission = await referralService.payCommissionForUser(shop.owner, {
-          platform: 'myplopplop',
-          serviceType: 'marketplace',
-          amount: order.total,
-          transactionId: order.orderNumber,
-          description: 'Order ' + order.orderNumber + ' at ' + shop.name
-        });
-        if (commission.commissioned) {
-          console.log('Agent ' + commission.koutyeCode + ' earned ' + commission.amount +
-            ' HTG on order ' + order.orderNumber);
-        }
-      }
-    } catch (e) {
-      // A commission must never be able to un-pay somebody's order.
-      console.error('Commission on order ' + order.orderNumber + ' failed:', e.message);
-    }
-
-    res.json({ success: true, paymentStatus: 'paid', orderNumber: order.orderNumber });
+    res.json({ success: true, paymentStatus: 'paid', orderNumber: order.orderNumber, paymentRef: ref, ordersConfirmed: out.confirmed.length });
   } catch (error) {
     console.error('Order payment verify error:', error);
-    res.status(500).json({ success: false, message: 'Verification failed' });
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
@@ -557,3 +494,4 @@ router.post('/admin/verify', protect, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.verifySolutionIPPayment = verifySolutionIPPayment;

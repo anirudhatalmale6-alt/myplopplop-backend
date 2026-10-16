@@ -306,4 +306,45 @@ router.post('/attach', async (req, res) => {
   });
 });
 
+/* ═══ MSOUWOUT -> "THIS RIDE IS COMPLETED AND PAID" (15 Oct 2026) ══════════
+   Same lock as /attach and /ticket-sale: only the servers hold the key, and a
+   missing key means CLOSED. MsouWout decides eligibility (completed, paid,
+   approved driver, not a test ride); this pays the driver's Ajan 3% of the
+   fare once per ride. Always 200 with the outcome - the caller records it and
+   retries only on a transport failure. */
+router.post('/ride-commission', async (req, res) => {
+  const ok = internalKeyOk(req);
+  if (ok === null) return res.status(503).json({ success: false, message: 'Service link not configured' });
+  if (!ok) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  try {
+    const b = req.body || {};
+    const out = await referralService.rideCommission({
+      driverPhone: b.driverPhone, passengerPhone: b.passengerPhone,
+      fare: b.fare, rideRef: b.rideRef
+    });
+    res.json({ success: true, result: out });
+  } catch (err) {
+    console.error('[MSOUWOUT] ride-commission failed:', err.message);
+    res.json({ success: true, result: { commissioned: false, reason: 'error' } });
+  }
+});
+
+/* ═══ ANY PLATFORM -> "THAT SALE WAS CANCELLED / REFUNDED" (15 Oct 2026) ════
+   Takes back every unpaid commission line for the transaction. Locked the same
+   way: anyone who could call it could wipe out an Ajan's earnings. */
+router.post('/reverse', async (req, res) => {
+  const ok = internalKeyOk(req);
+  if (ok === null) return res.status(503).json({ success: false, message: 'Service link not configured' });
+  if (!ok) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  try {
+    const b = req.body || {};
+    if (!b.transactionId) return res.status(400).json({ success: false, message: 'transactionId required' });
+    const out = await referralService.reverseCommission({ transactionId: b.transactionId, reason: b.reason });
+    res.json({ success: true, result: out });
+  } catch (err) {
+    console.error('[REVERSE] failed:', err.message);
+    res.status(500).json({ success: false, message: 'Reverse failed' });
+  }
+});
+
 module.exports = router;

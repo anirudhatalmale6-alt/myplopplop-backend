@@ -42,7 +42,14 @@ const transactionSchema = new mongoose.Schema({
     enum: ['available_balance', 'balance'],
     default: 'available_balance'
   },
-  recipient: String
+  recipient: String,
+  /* 16 Oct 2026: an earning held for a while before it can be withdrawn.
+     status 'pending' + releaseAt in the future = not yet available; the
+     release job (services/orderLifecycle.js releaseMatured) flips it once,
+     atomically, and moves the money between wallet buckets. */
+  releaseAt: Date,
+  earningOf: { type: String, enum: ['merchant', 'driver'] },
+  order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' }
 }, {
   timestamps: true
 });

@@ -75,6 +75,9 @@ const driverProfileSchema = new mongoose.Schema({
       default: [0, 0]
     }
   },
+  // 16 Oct 2026: when currentLocation was last reported. Dispatch ignores a
+  // driver whose position is older than a few minutes (closed the app).
+  locationUpdatedAt: Date,
 
   // Stats
   totalRides: { type: Number, default: 0 },

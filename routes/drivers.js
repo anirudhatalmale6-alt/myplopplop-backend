@@ -141,8 +141,10 @@ router.put('/location', protect, authorize('driver'), async (req, res) => {
       {
         currentLocation: {
           type: 'Point',
-          coordinates: [longitude, latitude]
-        }
+          coordinates: [Number(longitude), Number(latitude)]
+        },
+        // 16 Oct 2026: dispatch only offers jobs to drivers who reported recently
+        locationUpdatedAt: new Date()
       }
     );
     res.json({ success: true });

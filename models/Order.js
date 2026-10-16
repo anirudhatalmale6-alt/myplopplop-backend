@@ -58,7 +58,9 @@ const orderSchema = new mongoose.Schema({
 
   // Financials
   subtotal: { type: Number, required: true },
-  commission: { type: Number, default: 0 }, // platform commission (10%)
+  commission: { type: Number, default: 0 }, // the SELLER fee taken from the merchant's settlement
+  sellerFeePct: Number,          // the % behind `commission`, as applied to THIS order (15 Oct 2026)
+  sellerFeeRule: String,         // 'legacy' (store.commissionRate) | 'accepted' | 'not_accepted'
   serviceFee: { type: Number, default: 0 }, // 5% service fee the shopper is shown and charged
   diasporaFee: { type: Number, default: 0 }, // +3-5% for diaspora orders
   total: { type: Number, required: true },
@@ -97,7 +99,7 @@ const orderSchema = new mongoose.Schema({
   },
   cancelledBy: {
     type: String,
-    enum: ['customer', 'merchant', 'system', null],
+    enum: ['customer', 'merchant', 'system', 'admin', null],
     default: null
   },
   cancelReason: String,
@@ -122,7 +124,26 @@ const orderSchema = new mongoose.Schema({
   msouwoutTrackingCode: String,
   // MyPlopPlop delivery engine
   rideId: { type: mongoose.Schema.Types.ObjectId, ref: 'Ride' },
-  deliveryPin: String
+  /* The customer's 4-digit delivery code. ⛔ Only the CUSTOMER (and an admin)
+     may ever be sent it - routes strip it for the shop and the driver. */
+  deliveryPin: String,
+
+  /* ═══ 16 Oct 2026: the five must-fix areas (services/orderLifecycle.js) ═══ */
+  // One payment for a basket of several shops: every order in it carries the
+  // same paymentGroup (the first order's number), which is the reference the
+  // customer paid under. Confirming the payment confirms all of them.
+  paymentGroup: { type: String, index: true },
+  paymentCheckedAt: Date,          // the server poller's last look at the gateway
+  paymentChecks: { type: Number, default: 0 },
+  pinAttempts: { type: Number, default: 0 },   // wrong delivery codes entered
+  deliveredVia: String,            // 'pin' | 'pickup_pin' | 'admin_exception'
+  // Money moves ONCE: each credit is stamped by the single atomic update that
+  // makes it, so a retry or a second tap finds the stamp and does nothing.
+  merchantCreditedAt: Date,
+  driverCreditedAt: Date,
+  driverCreditUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  noDriverAlertedAt: Date,
+  refund: { type: mongoose.Schema.Types.ObjectId, ref: 'Refund' }
 }, {
   timestamps: true
 });

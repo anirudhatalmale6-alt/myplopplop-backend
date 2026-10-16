@@ -62,6 +62,14 @@ const storeSchema = new mongoose.Schema({
     min: 0,
     max: 50
   },
+  /* 15 Oct 2026: the merchant's acceptance of the revised MyPlopPlop pricing
+     (utils/marketFees.js). Jeffery: "We must notify merchants and obtain
+     acceptance of the revised pricing before applying it to their future
+     sales." The seller fee applies only when pricingAcceptedVersion is the
+     current version, and only to orders placed after pricingAcceptedAt. */
+  pricingAcceptedVersion: { type: String, default: '' },
+  pricingAcceptedAt: Date,
+  pricingAcceptedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   rating: {
     average: { type: Number, default: 0, min: 0, max: 5 },
     count: { type: Number, default: 0 }

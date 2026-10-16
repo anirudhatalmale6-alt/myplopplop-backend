@@ -1,4 +1,13 @@
 const express = require('express');
+const marketFees = require('../utils/marketFees');
+
+/* 16 Oct 2026: the shop never sees the customer's delivery code: the driver
+   must get it from the customer at the door, or it proves nothing. */
+function noPin(o) {
+  var x = o && o.toObject ? o.toObject() : Object.assign({}, o);
+  delete x.deliveryPin; delete x.pinAttempts;
+  return x;
+}
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const Store = require('../models/Store');
@@ -214,11 +223,48 @@ router.get('/merchant/my-store', protect, async function(req, res) {
       data: {
         store: store,
         products: products,
-        recentOrders: recentOrders
+        recentOrders: recentOrders.map(noPin)
       }
     });
   } catch (err) {
     console.error('Get my store error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ─── MERCHANT: THE PRICING, AND ACCEPTING IT (15 Oct 2026) ───
+// Jeffery: "notify merchants and obtain acceptance of the revised pricing
+// before applying it to their future sales." Shown in the merchant dashboard.
+router.get('/merchant/pricing', protect, async function(req, res) {
+  try {
+    var store = await Store.findOne({ owner: req.user._id });
+    if (!store) return res.status(404).json({ success: false, message: 'No store found' });
+    res.json({ success: true, data: marketFees.pricingFor(store) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+router.post('/merchant/pricing/accept', protect, async function(req, res) {
+  try {
+    if (marketFees.phase() === 'off') {
+      return res.status(409).json({ success: false, message: 'There is no new pricing to accept.' });
+    }
+    var store = await Store.findOne({ owner: req.user._id });
+    if (!store) return res.status(404).json({ success: false, message: 'No store found' });
+    // Accepting exactly the wording on the screen: an older page cannot accept a newer version.
+    if (String((req.body && req.body.version) || '') !== marketFees.pricingVersion()) {
+      return res.status(409).json({ success: false, message: 'The pricing changed. Reload the page and read it again.' });
+    }
+    if (!marketFees.hasAccepted(store)) {
+      store.pricingAcceptedVersion = marketFees.pricingVersion();
+      store.pricingAcceptedAt = new Date();
+      store.pricingAcceptedBy = req.user._id;
+      await store.save();
+      console.warn('[PRICING] ' + store.name + ' accepted pricing ' + store.pricingAcceptedVersion);
+    }
+    res.json({ success: true, data: marketFees.pricingFor(store) });
+  } catch (err) {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -252,7 +298,7 @@ router.get('/:id/orders', protect, async function(req, res) {
 
     res.json({
       success: true,
-      data: orders,
+      data: orders.map(noPin),
       pagination: { page: page, limit: limit, total: total }
     });
   } catch (err) {

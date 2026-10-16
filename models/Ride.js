@@ -28,6 +28,23 @@ const rideSchema = new mongoose.Schema({
 
   // Secure pickup / delivery verification code (customer gives to driver)
   pin: String,
+  /* 16 Oct 2026: the PICKUP code. Shown only to the driver who accepted; the
+     shop types it in before handing the parcel over, so the wrong driver
+     cannot collect the order. */
+  pickupCode: String,
+  pickupVerifiedAt: Date,
+  pickupLocation: {
+    type: { type: String, enum: ['Point'] },
+    coordinates: { type: [Number], default: undefined }
+  },
+  // Drivers who accepted and then cancelled: never offered this job again.
+  droppedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  searchingSince: Date,            // when the current search for a driver began
+  noDriverAlertedAt: Date,
+  // A delivery whose driver pay is 0 (a shop's free delivery, or the 2nd shop
+  // of a basket - the trip was charged once). Never offered to drivers until
+  // an admin sets the pay (POST /api/admin-ops/rides/:id/driver-pay).
+  needsDriverPay: { type: Boolean, default: false },
 
   // For diaspora orders - the person receiving in Haiti
   recipient: {

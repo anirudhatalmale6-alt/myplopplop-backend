@@ -89,6 +89,7 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/sol', solRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/admin-ops', require('./routes/adminOps'));   // refunds + deliveries needing a person (16 Oct 2026)
 app.use('/api/stores', storeRoutes);
 app.use('/api/payouts', payoutRoutes);
 app.use('/api/featured', featuredRoutes);
@@ -133,37 +134,86 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, message: 'Server error' });
 });
 
+/* ═══ 16 Oct 2026: SOCKET ROOMS NEED A LOGIN, AND ONLY YOUR OWN ═══════════
+   Anyone could join any shop's room (and read its order ids), any order or
+   ride room, and broadcast a fake driver position. Now the token travels in
+   the handshake (io(url, { auth: { token } })), and each join is checked
+   against the database: the shop's owner, the order's customer/driver/shop,
+   the ride's customer/driver. Driver positions are accepted only from that
+   ride's own driver, and are stored for tracking. */
+const jwtLib = require('jsonwebtoken');
+io.use((socket, next) => {
+  try {
+    const t = (socket.handshake.auth && socket.handshake.auth.token) || (socket.handshake.query && socket.handshake.query.token);
+    if (t) {
+      const d = jwtLib.verify(String(t), process.env.JWT_SECRET);
+      socket.userId = String(d.id);
+    }
+  } catch (e) { /* no or bad token: the socket can join nothing private */ }
+  next();
+});
+async function rideParty(socket, rideId) {
+  if (!socket.userId || !rideId) return null;
+  const Ride = require('./models/Ride');
+  const r = await Ride.findById(rideId).select('customer driver').catch(() => null);
+  if (!r) return null;
+  if (String(r.customer) === socket.userId) return 'customer';
+  if (r.driver && String(r.driver) === socket.userId) return 'driver';
+  return null;
+}
+
 // Socket.io real-time events
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
 
   // Driver joins their room
-  socket.on('driver_online', (data) => {
+  socket.on('driver_online', async () => {
+    if (!socket.userId) return;
+    const DriverProfile = require('./models/DriverProfile');
+    const p = await DriverProfile.findOne({ user: socket.userId, status: 'approved' }).select('_id').catch(() => null);
+    if (!p) return;
     socket.join('drivers');
-    socket.driverId = data.driverId;
-    console.log(`Driver ${data.driverId} online`);
+    socket.driverId = socket.userId;
+    console.log(`Driver ${socket.userId} online`);
   });
 
   // Customer joins ride room for tracking
-  socket.on('join_ride', (data) => {
+  socket.on('join_ride', async (data) => {
+    if (!(await rideParty(socket, data && data.rideId))) return;
     socket.join(`ride_${data.rideId}`);
     console.log(`Joined ride room: ride_${data.rideId}`);
   });
 
   // Merchant joins store room for order notifications
-  socket.on('join_store', (data) => {
+  socket.on('join_store', async (data) => {
+    if (!socket.userId || !data || !data.storeId) return;
+    const Store = require('./models/Store');
+    const st = await Store.findById(data.storeId).select('owner').catch(() => null);
+    if (!st || String(st.owner) !== socket.userId) return;
     socket.join(`store_${data.storeId}`);
     console.log(`Merchant joined store room: store_${data.storeId}`);
   });
 
   // Customer joins order room for tracking
-  socket.on('join_order', (data) => {
+  socket.on('join_order', async (data) => {
+    if (!socket.userId || !data || !data.orderId) return;
+    const Order = require('./models/Order');
+    const o = await Order.findById(data.orderId).select('customer rider store').catch(() => null);
+    if (!o) return;
+    let ok = String(o.customer) === socket.userId || (o.rider && String(o.rider) === socket.userId);
+    if (!ok) { const Store = require('./models/Store'); const st = await Store.findById(o.store).select('owner').catch(() => null); ok = !!(st && String(st.owner) === socket.userId); }
+    if (!ok) return;
     socket.join(`order_${data.orderId}`);
     console.log(`Joined order room: order_${data.orderId}`);
   });
 
   // Driver sends location update during ride
-  socket.on('driver_location', (data) => {
+  socket.on('driver_location', async (data) => {
+    if ((await rideParty(socket, data && data.rideId)) !== 'driver') return;
+    const lat = Number(data.latitude), lng = Number(data.longitude);
+    if (!isFinite(lat) || !isFinite(lng)) return;
+    const Ride = require('./models/Ride');
+    await Ride.updateOne({ _id: data.rideId }, { $set: { driverLocation: { type: 'Point', coordinates: [lng, lat] } } }).catch(() => {});
     io.to(`ride_${data.rideId}`).emit('location_update', {
       rideId: data.rideId,
       latitude: data.latitude,
@@ -172,10 +222,14 @@ io.on('connection', (socket) => {
   });
 
   // Chat: send message via socket (alternative to REST)
-  socket.on('chat_message', (data) => {
+  socket.on('chat_message', async (data) => {
+    // only the ride's customer or driver, and the sender is WHO IS LOGGED IN,
+    // not whatever name the message claims (16 Oct 2026)
+    const party = await rideParty(socket, data && data.rideId);
+    if (!party) return;
     io.to(`ride_${data.rideId}`).emit('new_message', {
-      sender: { _id: data.senderId, name: data.senderName },
-      senderRole: data.senderRole,
+      sender: { _id: socket.userId, name: data.senderName },
+      senderRole: party,
       message: data.message,
       type: 'text',
       createdAt: new Date()
@@ -183,7 +237,8 @@ io.on('connection', (socket) => {
   });
 
   // Chat: typing indicator
-  socket.on('typing', (data) => {
+  socket.on('typing', async (data) => {
+    if (!(await rideParty(socket, data && data.rideId))) return;
     socket.to(`ride_${data.rideId}`).emit('user_typing', {
       name: data.name,
       role: data.role
@@ -220,6 +275,25 @@ connectDB().then(() => {
     console.log('Delivery dispatch engine started (10s tick)');
   } catch (e) {
     console.error('Failed to start dispatch engine:', e.message);
+  }
+
+  /* 16 Oct 2026: the server checks unpaid baskets with SolutionIP itself
+     (customers who closed the page), and releases held earnings when their
+     hold ends. Both are idempotent: running twice changes nothing. */
+  try {
+    const paymentPoller = require('./services/paymentPoller');
+    const lifecycle = require('./services/orderLifecycle');
+    setInterval(() => {
+      paymentPoller.tick({ io }).then((r) => { if (r.confirmed || r.expired) console.log('[PAYMENT POLLER]', JSON.stringify(r)); })
+        .catch((e) => console.error('payment poller error:', e.message));
+    }, 60 * 1000);
+    setInterval(() => {
+      lifecycle.releaseMatured().then((r) => { if (r.shops || r.drivers) console.log('[RELEASE]', JSON.stringify(r)); })
+        .catch((e) => console.error('release error:', e.message));
+    }, 10 * 60 * 1000);
+    console.log('Payment poller (60s) and earnings release (10 min) started');
+  } catch (e) {
+    console.error('Failed to start payment poller / release:', e.message);
   }
 
   // Odoo catalogue sync: merchants running Odoo (MSC Xpress) change prices

@@ -15,6 +15,12 @@ const { sendPushToUser } = require('../routes/notifications');
 
 const OFFER_WINDOW_MS = 30 * 1000; // 30 seconds to accept
 const SEARCH_RADIUS_M = 15000;     // 15 km search radius for a driver
+/* 16 Oct 2026: a driver whose app has not reported a position for this long
+   is treated as gone (closed the app, no signal) and is not offered jobs. */
+const LOCATION_FRESH_MS = 15 * 60 * 1000;
+/* No driver has taken it for this long: tell the customer, the shop and the
+   administrators (once), and keep searching. */
+const NO_DRIVER_ALERT_MS = 10 * 60 * 1000;
 
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
@@ -52,6 +58,7 @@ async function findNearestDriver(pickupLngLat, excludeUserIds) {
     isOnline: true,
     services: 'delivery',
     user: { $nin: excludeUserIds || [] },
+    locationUpdatedAt: { $gte: new Date(Date.now() - LOCATION_FRESH_MS) },
     currentLocation: {
       $near: {
         $geometry: { type: 'Point', coordinates: pickupLngLat },
@@ -64,8 +71,10 @@ async function findNearestDriver(pickupLngLat, excludeUserIds) {
 
 // Offer a ride to the next closest driver. Returns true if an offer was sent.
 async function offerToNextDriver(ride, io) {
+  if (ride.needsDriverPay) return null;
   const pickupLngLat = [lng(ride.pickup.coordinates), lat(ride.pickup.coordinates)];
-  const profile = await findNearestDriver(pickupLngLat, ride.attemptedDrivers);
+  // never re-offer to a driver who already accepted this job and dropped it
+  const profile = await findNearestDriver(pickupLngLat, (ride.attemptedDrivers || []).concat(ride.droppedBy || []));
 
   if (!profile || !profile.user) {
     ride.offeredTo = null;
@@ -109,6 +118,14 @@ async function createDeliveryRideForOrder(order, store, io) {
   // Guard: don't create a second ride for the same order
   const existing = await Ride.findOne({ order: order._id });
   if (existing) return existing;
+  /* 16 Oct 2026: ⛔ never send a driver for an order that is not PAID (the
+     server's own confirmation) or that was cancelled. */
+  const fresh = await Order.findById(order._id);
+  if (!fresh || fresh.paymentStatus !== 'paid' || fresh.status === 'cancelled') {
+    console.warn('Dispatch refused for order ' + order.orderNumber + ': not paid or cancelled');
+    return null;
+  }
+  order = fresh;
 
   let pLng = lng(store.address && store.address.coordinates);
   let pLat = lat(store.address && store.address.coordinates);
@@ -142,7 +159,13 @@ async function createDeliveryRideForOrder(order, store, io) {
     }
   }
 
-  const pin = String(Math.floor(1000 + Math.random() * 9000));
+  /* The customer's own code, made when the payment was confirmed and shown
+     only to them. One code from payment to door. */
+  const pin = order.deliveryPin || String(Math.floor(1000 + Math.random() * 9000));
+  /* 16 Oct 2026: the driver is offered exactly what the order stores as his
+     80% of the delivery fee the customer PAID - never a fare recalculated
+     from a distance, which could differ from what was charged. */
+  fareCalc = { totalFare: Number(order.deliveryFee) || 0, commission: Number(order.deliveryPlatformCut) || 0, driverEarning: Number(order.deliveryDriverCut) || 0 };
 
   // routes/orders.js stores `recipient: null` on every ordinary (non-diaspora)
   // order. `recipient` is a NESTED PATH, so mongoose hands back a truthy wrapper
@@ -176,9 +199,11 @@ async function createDeliveryRideForOrder(order, store, io) {
     paymentMethod: order.paymentMethod || 'cash',
     paymentStatus: order.paymentStatus === 'paid' ? 'paid' : 'pending',
     status: 'requested',
+    needsDriverPay: !(fareCalc.driverEarning > 0),
     pin: pin,
     attemptedDrivers: [],
-    dispatchAttempts: 0
+    dispatchAttempts: 0,
+    searchingSince: new Date()
   }, rcp ? { recipient: rcp } : {}));
 
   // Stamp the tracking + pin back on the order for the customer/store views
@@ -186,6 +211,15 @@ async function createDeliveryRideForOrder(order, store, io) {
   order.deliveryPin = pin;
   await order.save().catch(() => {});
 
+  if (ride.needsDriverPay) {
+    // ⛔ never ask a driver to work for 0: an admin sets the pay first.
+    const ActivityLog = require('../models/ActivityLog'), User = require('../models/User');
+    await ActivityLog.create({ action: 'delivery.needs_driver_pay', targetType: 'Order', targetId: order._id,
+      detail: { orderNumber: order.orderNumber, rideId: String(ride._id), deliveryFee: order.deliveryFee || 0 } }).catch(() => {});
+    const admins = await User.find({ role: 'admin' }).select('_id');
+    for (const a of admins) sendPushToUser(a._id, 'Livrezon san peman chofè', 'Kòmand #' + order.orderNumber + ': fikse peman chofè a anvan nou voye l.', { url: '/admin/dashboard.html' }).catch(() => {});
+    return ride;
+  }
   await offerToNextDriver(ride, io);
   return ride;
 }
@@ -199,6 +233,47 @@ async function declineOffer(ride, driverUserId, io) {
   ride.offerExpiresAt = null;
   await ride.save();
   return offerToNextDriver(ride, io);
+}
+
+/* A driver who ACCEPTED and then cancels (or is suspended mid-job): the job
+   goes back to searching, never to him again, and everyone is told. One
+   conditional update, so it cannot happen twice or race a completion. */
+async function returnToSearch(rideId, driverUserId, reason, io) {
+  const now = new Date();
+  const ride = await Ride.findOneAndUpdate(
+    { _id: rideId, driver: driverUserId, status: { $in: ['accepted', 'picking_up'] } },
+    { $set: { status: 'requested', driver: null, acceptedAt: null, pickupCode: null, offeredTo: null, offerExpiresAt: null,
+              noDriverFound: false, searchingSince: now, noDriverAlertedAt: null },
+      $addToSet: { droppedBy: driverUserId, attemptedDrivers: driverUserId } },
+    { new: true });
+  if (!ride) return null;
+  if (ride.order) await Order.updateOne({ _id: ride.order, rider: driverUserId }, { $unset: { rider: 1 } });
+  sendPushToUser(ride.customer, 'Nou chèche yon lòt chofè', 'Chofè a pa ka fè livrezon an. N ap chèche yon lòt.', { url: '/orders.html' }).catch(() => {});
+  if (io && ride.store) io.to('store_' + ride.store).emit('dispatch_searching', { rideId: ride._id, orderId: ride.order, reason: reason });
+  await offerToNextDriver(ride, io);
+  return ride;
+}
+
+/* Ten minutes without a driver: tell the customer, the shop and every admin,
+   once, and keep looking. */
+async function alertNoDriver(ride, io) {
+  const r = await Ride.findOneAndUpdate({ _id: ride._id, noDriverAlertedAt: null }, { $set: { noDriverAlertedAt: new Date() } });
+  if (!r) return;
+  const User = require('../models/User');
+  const Store = require('../models/Store');
+  const order = ride.order ? await Order.findById(ride.order) : null;
+  if (order) await Order.updateOne({ _id: order._id }, { $set: { noDriverAlertedAt: new Date() } });
+  const label = order ? '#' + order.orderNumber : String(ride._id);
+  sendPushToUser(ride.customer, 'Pa gen chofè disponib pou kounye a', 'Kòmand ' + label + ': n ap kontinye chèche. Ou ka anile si ou vle.', { url: '/orders.html' }).catch(() => {});
+  if (ride.store) {
+    const st = await Store.findById(ride.store).select('owner');
+    if (st) sendPushToUser(st.owner, 'Pa gen chofè ankò', 'Kòmand ' + label + ' ap tann yon chofè depi 10 minit.', { url: '/merchant/orders.html' }).catch(() => {});
+  }
+  const admins = await User.find({ role: 'admin' }).select('_id').limit(20);
+  for (const a of admins) sendPushToUser(a._id, 'Livrezon san chofè', 'Kòmand ' + label + ' pa jwenn chofè depi 10 minit.', { url: '/admin/dashboard.html' }).catch(() => {});
+  try {
+    await require('../models/ActivityLog').create({ action: 'delivery.no_driver', targetType: 'Order', targetId: order && order._id, targetLabel: label, detail: { ride: ride._id, since: ride.searchingSince } });
+  } catch (e) {}
 }
 
 // Ticker: re-offer any offers that timed out, and retry rides that found no driver.
@@ -228,19 +303,40 @@ async function dispatchTick(io) {
     type: 'delivery',
     status: 'requested',
     offeredTo: null,
-    noDriverFound: true
+    noDriverFound: true,
+    needsDriverPay: { $ne: true }
   }).limit(25);
 
   for (const ride of stalled) {
-    // after a full cycle with no takers, clear the tried list to reconsider everyone
+    // A cancelled order's ride is closed, never re-offered.
+    if (ride.order) {
+      const o = await Order.findById(ride.order).select('status paymentStatus');
+      if (!o || o.status === 'cancelled' || o.paymentStatus !== 'paid') {
+        await Ride.updateOne({ _id: ride._id, status: 'requested' }, { $set: { status: 'cancelled', cancelledAt: now, cancelledBy: 'admin', cancelReason: 'Order cancelled or unpaid' } });
+        continue;
+      }
+    }
+    // after a full cycle with no takers, clear the tried list to reconsider
+    // everyone - except drivers who accepted and dropped it (droppedBy stays)
     ride.attemptedDrivers = [];
     await ride.save();
     await offerToNextDriver(ride, io);
   }
+
+  // 3) Nobody for ten minutes: alert once.
+  const longWait = await Ride.find({
+    type: 'delivery', status: 'requested', noDriverAlertedAt: null,
+    searchingSince: { $lt: new Date(now.getTime() - NO_DRIVER_ALERT_MS) }
+  }).limit(25);
+  for (const ride of longWait) await alertNoDriver(ride, io);
 }
 
 module.exports = {
   createDeliveryRideForOrder,
+  returnToSearch,
+  alertNoDriver,
+  LOCATION_FRESH_MS,
+  NO_DRIVER_ALERT_MS,
   offerToNextDriver,
   declineOffer,
   dispatchTick,
