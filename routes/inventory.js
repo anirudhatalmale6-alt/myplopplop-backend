@@ -37,16 +37,46 @@ const verifyStoreAccess = async (req, res) => {
   return store;
 };
 
+/* 22 Oct 2026 - the CSV can carry product photos: an "image" column holding a
+   public link (https://…/photo.jpg). Several links in one cell are separated by
+   "|" or ";" - the first one is the photo the store shows. A cell left EMPTY
+   never wipes the photos a product already has, so re-uploading a price list
+   is safe. A bad link is reported on its row and skipped; the row still saves.
+   The store puts this value straight into <img src>, so only a plain http(s)
+   URL with no quotes, brackets or spaces gets through. */
+const IMAGE_HEADERS = ['image', 'images', 'imageurl', 'image_url', 'photo', 'foto', 'imaj'];
+const readImageCell = (row) => {
+  for (const k of Object.keys(row)) {
+    if (IMAGE_HEADERS.includes(k.trim().toLowerCase())) return String(row[k] || '').trim();
+  }
+  return '';
+};
+const parseImageLinks = (cell) => {
+  const good = [];
+  const bad = [];
+  for (const part of cell.split(/[|;\n]+/).map(x => x.trim()).filter(Boolean)) {
+    let ok = false;
+    if (part.length <= 500 && !/["'<>\s`\\]/.test(part)) {
+      try {
+        const u = new URL(part);
+        ok = (u.protocol === 'https:' || u.protocol === 'http:') && !!u.hostname;
+      } catch (e) { ok = false; }
+    }
+    (ok ? good : bad).push(part);
+  }
+  return { good: good.slice(0, 10), bad };
+};
+
 router.get('/template', (req, res) => {
   const data = [
-    ['name', 'price', 'category', 'description', 'stockQuantity', 'unit', 'comparePrice', 'inStock', 'sku'],
-    ['Diri Blan (Riz Blanc)', 150, 'grocery', 'Sak diri blan 5 liv', 200, 'bag', 180, 'true', 'DIRI-5LB'],
-    ['Pwa Nwa (Black Beans)', 85, 'grocery', 'Pwa nwa sek 1 liv', 350, 'bag', 100, 'true', 'PWA-1LB'],
-    ['Luil Maskreti', 250, 'grocery', 'Luil kwit manje 1 lit', 120, 'bottle', 300, 'true', 'LUIL-1L'],
-    ['Pen Kreyol', 25, 'bakery', 'Pen fre chak jou', 50, 'piece', '', 'true', ''],
-    ['Manba (Peanut Butter)', 75, 'grocery', 'Manba natiral 500g', 80, 'jar', 90, 'true', 'MANBA-500'],
-    ['Dlo Filtre', 20, 'beverage', 'Dlo pwop 500ml', 500, 'bottle', 25, 'true', 'DLO-500'],
-    ['Pikliz', 60, 'condiment', 'Pikliz tradisyonel 250ml', 45, 'jar', 75, 'true', 'PIK-250']
+    ['name', 'price', 'category', 'description', 'stockQuantity', 'unit', 'comparePrice', 'inStock', 'sku', 'image'],
+    ['Diri Blan (Riz Blanc)', 150, 'grocery', 'Sak diri blan 5 liv', 200, 'bag', 180, 'true', 'DIRI-5LB', ''],
+    ['Pwa Nwa (Black Beans)', 85, 'grocery', 'Pwa nwa sek 1 liv', 350, 'bag', 100, 'true', 'PWA-1LB', ''],
+    ['Luil Maskreti', 250, 'grocery', 'Luil kwit manje 1 lit', 120, 'bottle', 300, 'true', 'LUIL-1L', ''],
+    ['Pen Kreyol', 25, 'bakery', 'Pen fre chak jou', 50, 'piece', '', 'true', '', ''],
+    ['Manba (Peanut Butter)', 75, 'grocery', 'Manba natiral 500g', 80, 'jar', 90, 'true', 'MANBA-500', ''],
+    ['Dlo Filtre', 20, 'beverage', 'Dlo pwop 500ml', 500, 'bottle', 25, 'true', 'DLO-500', ''],
+    ['Pikliz', 60, 'condiment', 'Pikliz tradisyonel 250ml', 45, 'jar', 75, 'true', 'PIK-250', '']
   ];
   const ws = XLSX.utils.aoa_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -125,6 +155,15 @@ router.post('/:storeId/upload', protect, upload.single('file'), async (req, res)
 
       if (row.sku !== undefined && String(row.sku).trim() !== '') {
         productData.sku = String(row.sku).trim();
+      }
+
+      const imageCell = readImageCell(row);
+      if (imageCell) {
+        const links = parseImageLinks(imageCell);
+        if (links.good.length) productData.images = links.good;
+        if (links.bad.length) {
+          errors.push({ row: rowNum, message: `Image link not valid (product saved without it): ${links.bad[0].slice(0, 80)}` });
+        }
       }
 
       try {
