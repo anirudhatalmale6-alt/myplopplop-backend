@@ -67,6 +67,24 @@ const parseImageLinks = (cell) => {
   return { good: good.slice(0, 10), bad };
 };
 
+/* 22 Oct 2026: prices and quantities were read with parseFloat/parseInt,
+   which stop at the first non-digit - "1,200" became 1 HTG, a stock of
+   "1,000" became 1, and "120 goud" slipped through. A spreadsheet cell is
+   either a real number (XLSX) or text that must be a number and nothing else:
+     1200 · 1 200 · 1,200 · 1.200,50 · 1,200.50 · 49,99 · 49.99
+   Anything else is refused on its row so the merchant sees it. */
+const parseNum = (v, { int = false } = {}) => {
+  if (typeof v === 'number') return Number.isFinite(v) && (!int || Number.isInteger(v)) ? v : NaN;
+  let t = String(v == null ? '' : v).trim().replace(/[\s\u00a0\u202f]/g, '');
+  if (!t) return NaN;
+  if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, '');                    // 1,200 / 1,200.50
+  else if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) t = t.replace(/\./g, '').replace(',', '.'); // 1.200 / 1.200,50
+  else if (/^\d+,\d{1,2}$/.test(t)) t = t.replace(',', '.');                                // 49,99
+  if (!/^\d+(\.\d+)?$/.test(t)) return NaN;
+  const n = Number(t);
+  return int && !Number.isInteger(n) ? NaN : n;
+};
+
 router.get('/template', (req, res) => {
   const data = [
     ['name', 'price', 'category', 'description', 'stockQuantity', 'unit', 'comparePrice', 'inStock', 'sku', 'image'],
@@ -101,7 +119,9 @@ router.post('/:storeId/upload', protect, upload.single('file'), async (req, res)
     // mangle accents into mojibake. XLSX binary formats stay as a buffer.
     const isCsv = /\.csv$/i.test(req.file.originalname) || req.file.mimetype === 'text/csv';
     const workbook = isCsv
-      ? XLSX.read(req.file.buffer.toString('utf8').replace(/^﻿/, ''), { type: 'string' })
+      /* raw: keep every CSV cell as the text the merchant typed. Left to
+         guess, the library read "49,99" as 4999; parseNum decides instead. */
+      ? XLSX.read(req.file.buffer.toString('utf8').replace(/^﻿/, ''), { type: 'string', raw: true })
       : XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
@@ -123,13 +143,13 @@ router.post('/:storeId/upload', protect, upload.single('file'), async (req, res)
         continue;
       }
 
-      const price = parseFloat(row.price);
+      const price = parseNum(row.price);
       if (isNaN(price) || price < 0) {
         errors.push({ row: rowNum, message: `Invalid price: ${row.price}` });
         continue;
       }
 
-      const stockQuantity = row.stockQuantity !== '' ? parseInt(row.stockQuantity) : -1;
+      const stockQuantity = row.stockQuantity !== '' ? parseNum(row.stockQuantity, { int: true }) : -1;
       if (row.stockQuantity !== '' && isNaN(stockQuantity)) {
         errors.push({ row: rowNum, message: `Invalid stockQuantity: ${row.stockQuantity}` });
         continue;
@@ -149,8 +169,10 @@ router.post('/:storeId/upload', protect, upload.single('file'), async (req, res)
         store: store._id
       };
 
-      if (row.comparePrice !== '' && !isNaN(parseFloat(row.comparePrice))) {
-        productData.comparePrice = parseFloat(row.comparePrice);
+      if (row.comparePrice !== '' && row.comparePrice !== undefined) {
+        const cp = parseNum(row.comparePrice);
+        if (isNaN(cp)) errors.push({ row: rowNum, message: `Invalid comparePrice (ignored): ${row.comparePrice}` });
+        else productData.comparePrice = cp;
       }
 
       if (row.sku !== undefined && String(row.sku).trim() !== '') {
