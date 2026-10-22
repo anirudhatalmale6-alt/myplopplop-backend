@@ -136,6 +136,8 @@ router.post('/', protect, [
     // here as well as at sign-up. attachReferral() only writes one referral
     // per person, so doing it in both places cannot pay an agent twice.
     var agentCode = req.body.koutyeCode || req.body.agentCode || req.body.ref;
+    /* From the LajanMaker POS: the Ajan who registered this shop, by phone. */
+    if (!agentCode && req.body.agentPhone) agentCode = await referralService.koutyeCodeForPhone(req.body.agentPhone);
     var refResult = await referralService.attachReferral({
       code: agentCode,
       platform: 'myplopplop',

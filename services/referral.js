@@ -69,6 +69,26 @@ function phoneKey(raw) {
   return d.length > 8 ? d.slice(-8) : d;
 }
 
+/* 22 Oct 2026: the LajanMaker POS knows its Ajan by PHONE (the number typed
+   for the free trial), not by referral code. A shop the Ajan registers from
+   the POS was created with no code at all, so it never counted for him. This
+   finds the ACTIVE Ajan code that belongs to a phone ('' when none): the
+   account's own phone first, then the WhatsApp / payout number on the Ajan. */
+async function koutyeCodeForPhone(raw) {
+  const key = phoneKey(raw);
+  if (!key || key.length < 8) return '';
+  const re = new RegExp(key.split('').join('[^0-9]*') + '[^0-9]*$');
+  try {
+    const User = require('../models/User');
+    const users = await User.find({ phone: re }).select('_id').limit(10).lean();
+    let k = users.length ? await Koutye.findOne({ user: { $in: users.map((u) => u._id) } }).lean() : null;
+    if (!k) k = await Koutye.findOne({ $or: [{ whatsapp: re }, { 'payoutDetails.phone': re }] }).lean();
+    return k && k.status === 'active' ? k.koutyeCode : '';
+  } catch (e) {
+    return '';
+  }
+}
+
 /* Attach a referral to somebody who just registered.
 
    Returns { attached, reason, referral } and NEVER throws: a registration is
@@ -513,6 +533,7 @@ module.exports = {
   payCommissionForUser,
   commissionForTicketSale,
   phoneKey,
+  koutyeCodeForPhone,
   normalizeCode,
   REFERRAL_WINDOW_DAYS,
   COMMISSION_RATES,
