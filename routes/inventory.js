@@ -196,7 +196,10 @@ router.post('/:storeId/upload', protect, upload.single('file'), async (req, res)
             || await Product.findOne({ name: productData.name, store: store._id })
           : await Product.findOne({ name: productData.name, store: store._id });
         if (existing) {
-          await Product.updateOne({ _id: existing._id }, { $set: productData });
+          /* A product the merchant removed earlier is only hidden (isActive
+             false). Importing it again means "I sell this again": show it,
+             rather than report "updated" on something nobody can see. */
+          await Product.updateOne({ _id: existing._id }, { $set: Object.assign({ isActive: true }, productData) });
           updated++;
         } else {
           await Product.create(Object.assign({ source: 'csv' }, productData));
