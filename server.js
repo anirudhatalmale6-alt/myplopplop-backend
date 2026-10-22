@@ -81,6 +81,16 @@ app.use('/api/drivers', driverRoutes);
 app.use('/api/rides', rideRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin-pin', adminPinRoutes);
+/* 22 Oct 2026: the badge console on haitibiznis-api finds / creates an Ajan's
+   referral code and reads the pilot's results through these, server to server,
+   so nobody needs a second console code. Same shared key as /ticket-sale, and
+   the same rule: no key configured = door CLOSED. */
+const ajanInternal = express.Router();
+ajanInternal.use(require('./utils/internalKey'));
+ajanInternal.get('/ajan-code', adminPinRoutes.ajan.lookup);
+ajanInternal.post('/ajan-code', adminPinRoutes.ajan.create);
+ajanInternal.post('/ajan-performance', adminPinRoutes.ajan.performance);
+app.use('/api/internal', ajanInternal);
 /* Partner organizations: the dashboard built in June, finally given its data. */
 app.use('/api/organizations', require('./routes/organizations'));
 app.use('/api/payments', paymentRoutes);

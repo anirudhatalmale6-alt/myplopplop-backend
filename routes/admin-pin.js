@@ -751,4 +751,247 @@ router.post('/commissions/:id/:action(approve|reject)', async (req, res) => {
   }
 });
 
+/* ═══ AJAN CODES FOR THE BADGE CONSOLE + PILOT RESULTS (22 Oct 2026) ════════
+ *
+ * Jeffery: "The certification number (LMA-2026-XXXXXX) and personal referral
+ * code are two different things. We must not confuse them." The badge lives on
+ * haitibiznis-api; the code that EARNS lives here, in Koutye. Until now Jennifer
+ * could only type a code and hope: nothing found an Ajan's code from his phone,
+ * nothing could make one without sending him to koutye.html and back, and
+ * nothing said whether the code she typed was even HIS.
+ *
+ *   GET  /api/admin-pin/ajan-code?phone=…&code=…   look up, never writes
+ *   POST /api/admin-pin/ajan-code {name, phone, customCode?}
+ *        find-or-create: ONE phone = ONE code. A second tap returns the same one.
+ *   POST /api/admin-pin/ajan-performance {agents:[{code, from}]}
+ *        the pilot's results, counted from each Ajan's activation date.
+ *   The same three are mounted at /api/internal/* (server.js) for
+ *   haitibiznis-api, behind the shared INTERNAL_SERVICE_KEY.
+ *
+ * ⛔ Only a code in Koutye earns anything (services/referral.js looks nowhere
+ * else). A koutye.html sign-up that nobody approved is NOT a working code yet -
+ * reported as `pendingSignup`, and creating approves THAT one rather than
+ * inventing a second code for the same person.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+const { phoneKey: refPhoneKey } = require('../services/referral');
+
+/* "+509 4685-9702" and "46859702" are the same subscriber: match the last
+   eight digits wherever the separators fall. */
+function tailRe(key) {
+  return new RegExp(key.split('').join('[^0-9]*') + '[^0-9]*$');
+}
+
+function koutyePhoneKeys(k) {
+  return [k.user && k.user.phone, k.whatsapp, k.payoutDetails && k.payoutDetails.phone]
+    .map(refPhoneKey).filter(Boolean);
+}
+
+function codeView(k, key) {
+  const keys = koutyePhoneKeys(k);
+  return {
+    code: k.koutyeCode,
+    name: (k.user && k.user.name) || '',
+    phone: (k.user && k.user.phone) || k.whatsapp || '',
+    status: k.status,
+    organization: k.organization || '',
+    phoneMatch: key ? keys.indexOf(key) >= 0 : null
+  };
+}
+
+async function koutyeByPhone(key) {
+  if (!Koutye || !key || key.length < 8) return null;
+  const re = tailRe(key);
+  const users = await User.find({ phone: re }).select('_id').limit(10).lean();
+  let k = null;
+  if (users.length) {
+    k = await Koutye.findOne({ user: { $in: users.map((u) => u._id) } }).populate('user', 'name phone').lean();
+  }
+  if (!k) {
+    k = await Koutye.findOne({ $or: [{ whatsapp: re }, { 'payoutDetails.phone': re }] })
+      .populate('user', 'name phone').lean();
+  }
+  return k;
+}
+
+async function koutyeByCode(code) {
+  const esc = String(code || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!Koutye || !esc) return null;
+  return Koutye.findOne({ koutyeCode: new RegExp('^' + esc + '$', 'i') }).populate('user', 'name phone').lean();
+}
+
+async function pendingSignupByPhone(key) {
+  if (!ParenajSignup || !key || key.length < 8) return null;
+  return ParenajSignup.findOne({ phone: tailRe(key), status: 'pending' }).lean();
+}
+
+async function ajanLookup(req, res) {
+  try {
+    const key = refPhoneKey(req.query.phone);
+    const out = { byPhone: null, pendingSignup: null, byCode: null };
+    const kp = await koutyeByPhone(key);
+    if (kp) out.byPhone = codeView(kp, key);
+    else {
+      const s = await pendingSignupByPhone(key);
+      if (s) out.pendingSignup = { code: s.koutyeCode, name: s.name, phone: s.phone };
+    }
+    if (req.query.code) {
+      const kc = await koutyeByCode(req.query.code);
+      if (kc) out.byCode = codeView(kc, key);
+    }
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+function newKoutyeCode(name) {
+  const clean = String(name || 'AJAN').replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase() || 'AJN';
+  return 'KB-' + clean + crypto.randomBytes(4).toString('hex').slice(0, 5).toUpperCase();
+}
+
+async function codeTaken(code) {
+  const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('^' + esc + '$', 'i');
+  return !!((Koutye && await Koutye.exists({ koutyeCode: re })) ||
+            (ParenajSignup && await ParenajSignup.exists({ koutyeCode: re })));
+}
+
+async function ajanCreate(req, res) {
+  try {
+    if (!Koutye) return res.status(500).json({ error: 'agent models are not loaded' });
+    const b = req.body || {};
+    const name = String(b.name || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    const phone = String(b.phone || '').trim().slice(0, 32);
+    const key = refPhoneKey(phone);
+    if (!name) return res.status(400).json({ error: 'name_required' });
+    if (!key || key.length < 8) return res.status(400).json({ error: 'phone_required' });
+
+    /* Already an Ajan? That code, never a second one. */
+    const had = await koutyeByPhone(key);
+    if (had) return res.json({ success: true, existing: true, agent: codeView(had, key) });
+
+    /* Signed up on koutye.html but never approved: approve THAT code - it may
+       already be on a flyer or in a WhatsApp message. */
+    const signup = await pendingSignupByPhone(key);
+    let code = signup ? signup.koutyeCode : '';
+    if (!code) {
+      const custom = String(b.customCode || '').trim().toUpperCase().replace(/\s+/g, '-');
+      if (custom) {
+        if (!/^[A-Z0-9][A-Z0-9-]{2,19}$/.test(custom)) return res.status(400).json({ error: 'bad_code' });
+        /* An LMA number is the BADGE, not a referral code. */
+        if (/^LMA-?\d{4}/.test(custom)) return res.status(400).json({ error: 'code_is_badge_number' });
+        if (await codeTaken(custom)) return res.status(409).json({ error: 'code_taken' });
+        code = custom;
+      } else {
+        for (let i = 0; i < 10 && !code; i++) {
+          const c = newKoutyeCode(name);
+          if (!(await codeTaken(c))) code = c;
+        }
+        if (!code) return res.status(500).json({ error: 'no_code' });
+      }
+    }
+
+    /* Every Ajan screen sits behind a login, so the Ajan needs an account. The
+       person who already has one (same phone) BECOMES the Ajan - no duplicate.
+       A new account gets a random PIN, returned ONCE, never stored in clear. */
+    let user = await findByPhone(phone);
+    if (!user) {
+      const users = await User.find({ phone: tailRe(key) }).limit(2);
+      if (users.length === 1) user = users[0];
+    }
+    let tempPin = null;
+    if (!user) {
+      tempPin = String(crypto.randomInt(1000, 10000));
+      user = await User.create({ name, phone, password: tempPin, role: 'customer', language: 'ht' });
+    }
+
+    let k;
+    try {
+      k = await Koutye.create({
+        user: user._id, koutyeCode: code, status: 'active',
+        whatsapp: phone, payoutMethod: 'moncash', payoutDetails: { phone }
+      });
+    } catch (e) {
+      /* Two taps raced: the other one made it. Report that one. */
+      if (e && e.code === 11000) {
+        const again = await koutyeByPhone(key);
+        if (again) return res.json({ success: true, existing: true, agent: codeView(again, key) });
+      }
+      throw e;
+    }
+    if (signup) await ParenajSignup.updateOne({ _id: signup._id }, { $set: { status: 'approved' } });
+
+    const made = await Koutye.findById(k._id).populate('user', 'name phone').lean();
+    res.json({ success: true, created: true, fromSignup: !!signup, tempPin, agent: codeView(made, key) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/* Digital products and services: what an Ajan sells rather than recruits. */
+const DIGITAL_PLATFORMS = ['48hoursready', 'utility', 'tikelakay'];
+const NOT_EARNED = ['rejected', 'reversed', 'expired'];
+
+async function ajanPerformance(req, res) {
+  try {
+    if (!Koutye || !KoutyeReferral) return res.json({ success: true, results: [] });
+    const asked = Array.isArray(req.body && req.body.agents) ? req.body.agents.slice(0, 200) : [];
+    const results = [];
+    for (const a of asked) {
+      const code = String((a && a.code) || '').trim();
+      const from = a && a.from ? new Date(a.from) : new Date(0);
+      const row = { code, from: isNaN(from) ? null : from, found: false,
+        drivers: 0, businesses: 0, customers: 0, professionals: 0, referrals: 0,
+        digitalCount: 0, digitalSales: 0, salesCount: 0, sales: 0, commissions: 0, byPlatform: {} };
+      const k = code ? await koutyeByCode(code) : null;
+      if (k && !isNaN(from)) {
+        row.found = true;
+        row.code = k.koutyeCode;
+        row.name = (k.user && k.user.name) || '';
+        row.organization = k.organization || '';
+        const refs = await KoutyeReferral.find({ koutye: k._id, createdAt: { $gte: from }, status: { $ne: 'cancelled' } })
+          .select('platform referredEntity.type').lean();
+        refs.forEach((r) => {
+          const t = r.referredEntity && r.referredEntity.type;
+          if (t === 'driver') row.drivers++;
+          else if (t === 'business' || t === 'merchant') row.businesses++;
+          else if (t === 'customer') row.customers++;
+          else if (t === 'professional') row.professionals++;
+          row.referrals++;
+          const p = row.byPlatform[r.platform] || (row.byPlatform[r.platform] = { referrals: 0, sales: 0, salesCount: 0, commissions: 0 });
+          p.referrals++;
+        });
+        if (KoutyeCommission) {
+          const coms = await KoutyeCommission.find({ koutye: k._id, createdAt: { $gte: from }, status: { $nin: NOT_EARNED } })
+            .select('platform sourceAmount amount').lean();
+          coms.forEach((c) => {
+            const amt = Number(c.sourceAmount) || 0;
+            const com = Number(c.amount) || 0;
+            row.salesCount++; row.sales += amt; row.commissions += com;
+            if (DIGITAL_PLATFORMS.indexOf(c.platform) >= 0) { row.digitalCount++; row.digitalSales += amt; }
+            const p = row.byPlatform[c.platform] || (row.byPlatform[c.platform] = { referrals: 0, sales: 0, salesCount: 0, commissions: 0 });
+            p.salesCount++; p.sales += amt; p.commissions += com;
+          });
+          row.sales = Math.round(row.sales * 100) / 100;
+          row.digitalSales = Math.round(row.digitalSales * 100) / 100;
+          row.commissions = Math.round(row.commissions * 100) / 100;
+        }
+      }
+      results.push(row);
+    }
+    res.json({ success: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+router.get('/ajan-code', ajanLookup);
+router.post('/ajan-code', ajanCreate);
+router.post('/ajan-performance', ajanPerformance);
+
+/* The same three, for haitibiznis-api's console server to server (mounted in
+   server.js behind the shared INTERNAL_SERVICE_KEY), so Jennifer needs only the
+   one console code she already has. */
+router.ajan = { lookup: ajanLookup, create: ajanCreate, performance: ajanPerformance };
+
 module.exports = router;
