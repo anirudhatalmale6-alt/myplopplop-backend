@@ -48,7 +48,15 @@ async function findByPhone(phone, select) {
   const loose = new RegExp('^[^0-9]*' + digits.split('').join('[^0-9]*') + '$');
   let q2 = User.findOne({ phone: loose });
   if (select) q2 = q2.select(select);
-  return q2;
+  user = await q2;
+  if (user || digits.length !== 8) return user;
+  /* 23 Oct 2026: the same 8-digit gap as login - "4685 9702" never found the
+     account saved as +509 4685 9702, so a PIN reset or an admin grant typed
+     the local way said "No account". +509 only, nothing else. */
+  const loose509 = new RegExp('^[^0-9]*5[^0-9]*0[^0-9]*9[^0-9]*' + digits.split('').join('[^0-9]*') + '$');
+  let q3 = User.findOne({ phone: loose509 });
+  if (select) q3 = q3.select(select);
+  return q3;
 }
 
 /* Reset a merchant's or driver's PIN for them. This replaces the old public
