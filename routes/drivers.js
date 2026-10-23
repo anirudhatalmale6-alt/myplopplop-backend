@@ -1,7 +1,7 @@
 const express = require('express');
 const DriverProfile = require('../models/DriverProfile');
 const User = require('../models/User');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, driverAccess } = require('../middleware/auth');
 const upload = require('../middleware/upload');
 const { notifySignup } = require('../utils/notify');
 const { attachReferral } = require('../services/referral');
@@ -83,8 +83,13 @@ router.post('/onboard', protect, upload.fields([
       idPhoto: req.files?.idPhoto?.[0]?.path
     });
 
-    // Update user role to driver
-    await User.findByIdAndUpdate(req.user._id, { role: 'driver' });
+    /* 23 Oct 2026: a plain customer account becomes a driver account, as
+       before. Any other account (admin, merchant, ...) KEEPS its role: the
+       profile above is what makes it a driver now (middleware driverAccess).
+       Overwriting the role silently took the owner's admin dashboard away. */
+    if (!req.user.role || req.user.role === 'customer') {
+      await User.findByIdAndUpdate(req.user._id, { role: 'driver' });
+    }
 
     // Credit the LajanMaker agent who recruited this driver, same 12-month
     // window as a customer or a merchant.
@@ -120,7 +125,7 @@ router.post('/onboard', protect, upload.fields([
 });
 
 // GET /api/drivers/profile - Get own driver profile
-router.get('/profile', protect, authorize('driver'), async (req, res) => {
+router.get('/profile', protect, driverAccess, async (req, res) => {
   try {
     const profile = await DriverProfile.findOne({ user: req.user._id }).populate('user', 'name phone');
     if (!profile) {
@@ -133,7 +138,7 @@ router.get('/profile', protect, authorize('driver'), async (req, res) => {
 });
 
 // PUT /api/drivers/location - Update driver location
-router.put('/location', protect, authorize('driver'), async (req, res) => {
+router.put('/location', protect, driverAccess, async (req, res) => {
   try {
     const { longitude, latitude } = req.body;
     await DriverProfile.findOneAndUpdate(
@@ -154,7 +159,7 @@ router.put('/location', protect, authorize('driver'), async (req, res) => {
 });
 
 // PUT /api/drivers/online - Toggle online status
-router.put('/online', protect, authorize('driver'), async (req, res) => {
+router.put('/online', protect, driverAccess, async (req, res) => {
   try {
     const { isOnline } = req.body;
     const profile = await DriverProfile.findOneAndUpdate(
@@ -202,7 +207,7 @@ router.get('/nearby', async (req, res) => {
 });
 
 // GET /api/drivers/stats - Driver stats
-router.get('/stats', protect, authorize('driver'), async (req, res) => {
+router.get('/stats', protect, driverAccess, async (req, res) => {
   try {
     const profile = await DriverProfile.findOne({ user: req.user._id });
     if (!profile) {

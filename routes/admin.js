@@ -100,6 +100,12 @@ router.put('/drivers/:id/verify', async (req, res) => {
     if (!profile) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }
+    // 23 Oct 2026 (Jeffery): nobody approves or rejects their OWN driver
+    // profile - another administrator must. An admin can now also be a driver.
+    if (String(profile.user) === String(req.user._id)) {
+      return res.status(403).json({ success: false, code: 'OWN_PROFILE',
+        message: 'You cannot approve or reject your own driver profile. Another administrator must do it.' });
+    }
 
     if (action === 'approve') {
       profile.status = 'approved';

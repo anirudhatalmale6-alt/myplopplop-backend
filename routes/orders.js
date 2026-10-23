@@ -445,7 +445,9 @@ router.put('/:id/assign-rider', protect, authorize('admin'), async function(req,
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
     var rider = await User.findById(req.body.riderId).select('role isActive');
-    if (!rider || rider.role !== 'driver' || rider.isActive === false) {
+    // The approved driver PROFILE decides (checked just below); the account's
+    // role may be admin or merchant too (23 Oct 2026).
+    if (!rider || rider.isActive === false) {
       return res.status(400).json({ success: false, message: 'That user is not an active driver' });
     }
     var DriverProfile = require('../models/DriverProfile');

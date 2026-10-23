@@ -163,6 +163,15 @@ router.post('/login', [
         const loose = new RegExp('^[^0-9]*' + digits.split('').join('[^0-9]*') + '$');
         user = await User.findOne({ phone: loose }).select('+password');
       }
+      /* 23 Oct 2026: a Haitian number typed as its 8 local digits
+         ("4685 9702") never matched an account saved as +509 4685 9702, so
+         the owner got "Invalid credentials" while the sign-up page - which
+         adds +509 itself - said the number already had an account. Same
+         country only: +509 is added, nothing else. */
+      if (!user && digits.length === 8) {
+        const loose509 = new RegExp('^[^0-9]*5[^0-9]*0[^0-9]*9[^0-9]*' + digits.split('').join('[^0-9]*') + '$');
+        user = await User.findOne({ phone: loose509 }).select('+password');
+      }
     }
 
     if (!user) {

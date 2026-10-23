@@ -4,7 +4,7 @@ const Ride = require('../models/Ride');
 const DriverProfile = require('../models/DriverProfile');
 const Transaction = require('../models/Transaction');
 const User = require('../models/User');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, driverAccess } = require('../middleware/auth');
 const { calculateFare } = require('../utils/fareCalculator');
 const { sendPushToUser } = require('./notifications');
 
@@ -136,7 +136,7 @@ router.post('/', protect, [
 });
 
 // PUT /api/rides/:id/accept - Driver accepts a ride
-router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
+router.put('/:id/accept', protect, driverAccess, async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.id);
     if (!ride) {
@@ -250,7 +250,7 @@ router.put('/:id/accept', protect, authorize('driver'), async (req, res) => {
 
 // GET /api/rides/my-offer - The delivery currently offered to THIS driver (30s window),
 // plus any job they've already accepted and are still working on.
-router.get('/my-offer', protect, authorize('driver'), async (req, res) => {
+router.get('/my-offer', protect, driverAccess, async (req, res) => {
   try {
     const offer = await Ride.findOne({
       type: 'delivery',
@@ -281,7 +281,7 @@ router.get('/my-offer', protect, authorize('driver'), async (req, res) => {
 });
 
 // PUT /api/rides/:id/decline - Driver declines an offer → auto re-offer to next closest
-router.put('/:id/decline', protect, authorize('driver'), async (req, res) => {
+router.put('/:id/decline', protect, driverAccess, async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.id);
     if (!ride) return res.status(404).json({ success: false, message: 'Ride not found' });
@@ -424,7 +424,7 @@ async function shopDeliveryStatus(req, res, ride, status) {
 }
 
 // PUT /api/rides/:id/status - Update ride status
-router.put('/:id/status', protect, authorize('driver'), async (req, res) => {
+router.put('/:id/status', protect, driverAccess, async (req, res) => {
   try {
     const { status } = req.body;
     const ride = await Ride.findById(req.params.id);
@@ -631,8 +631,13 @@ router.get('/', protect, async (req, res) => {
     const { status, page = 1, limit = 20 } = req.query;
     const query = {};
 
+    // An admin or a shop owner can also be a driver (driver profile, own role
+    // kept): they see the rides they drove AND the ones they ordered.
+    const both = req.user.role !== 'driver' && await DriverProfile.exists({ user: req.user._id });
     if (req.user.role === 'driver') {
       query.driver = req.user._id;
+    } else if (both) {
+      query.$or = [{ driver: req.user._id }, { customer: req.user._id }];
     } else {
       query.customer = req.user._id;
     }
@@ -650,7 +655,13 @@ router.get('/', protect, async (req, res) => {
 
     // 16 Oct 2026: a driver's own ride list carried the customer's delivery code
     const isDrv = req.user.role === 'driver';
-    res.json({ success: true, count: rides.length, total, page: parseInt(page), rides: rides.map(isDrv ? forDriver : forCustomer) });
+    const me = String(req.user._id);
+    const view = function (r) {
+      if (isDrv) return forDriver(r);
+      const d = r.driver && (r.driver._id || r.driver);
+      return d && String(d) === me ? forDriver(r) : forCustomer(r);
+    };
+    res.json({ success: true, count: rides.length, total, page: parseInt(page), rides: rides.map(view) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -662,7 +673,7 @@ router.get('/', protect, async (req, res) => {
 // job on the platform to anybody with role:'driver', so a delivery rider was
 // shown passengers waiting and a driver still awaiting approval was shown
 // everything.
-router.get('/available', protect, authorize('driver'), async (req, res) => {
+router.get('/available', protect, driverAccess, async (req, res) => {
   try {
     const myProfile = await DriverProfile.findOne({ user: req.user._id });
     if (!myProfile || myProfile.status !== 'approved') {
