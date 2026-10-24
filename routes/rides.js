@@ -177,6 +177,15 @@ router.put('/:id/accept', protect, driverAccess, async (req, res) => {
       });
     }
 
+    // A shop under a demo lock: only its named drivers, even when the job is
+    // waiting un-offered (offeredTo null) - that state is otherwise open to all.
+    if (ride.store) {
+      const only = await require('../services/deliveryDispatch').lockedDrivers(ride.store);
+      if (only && only.indexOf(String(req.user._id)) === -1) {
+        return res.status(403).json({ success: false, message: 'This delivery is reserved for another driver' });
+      }
+    }
+
     // For auto-dispatched deliveries, only the driver currently being offered the
     // job may accept, and only before the 30s window closes.
     if (ride.offeredTo) {
@@ -691,8 +700,14 @@ router.get('/available', protect, driverAccess, async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(50);
 
+    // a locked shop's job is not listed for drivers it is not reserved for
+    const Store = require('../models/Store');
+    const locked = await Store.find({ 'dispatchLock.drivers.0': { $exists: true } }).select('dispatchLock').lean();
+    const me = String(req.user._id);
+    const hidden = locked.filter(function (s) { return s.dispatchLock.drivers.map(String).indexOf(me) === -1; }).map(function (s) { return String(s._id); });
     // never the customer's delivery code, never another driver's pickup code
-    const out = rides.map(function (r) { const o = forDriver(r); delete o.pickupCode; return o; });
+    const out = rides.filter(function (r) { return !r.store || hidden.indexOf(String(r.store)) === -1; })
+      .map(function (r) { const o = forDriver(r); delete o.pickupCode; return o; });
     res.json({ success: true, count: out.length, rides: out });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

@@ -51,8 +51,29 @@ function fareFromQuote(quoted) {
   return { totalFare: total, commission, driverEarning: total - commission };
 }
 
+/* The drivers a LOCKED shop's deliveries are reserved for (Store.dispatchLock),
+   as strings, or null when the shop dispatches normally. */
+async function lockedDrivers(storeId) {
+  if (!storeId) return null;
+  const Store = require('../models/Store');
+  const st = await Store.findById(storeId).select('dispatchLock').lean();
+  const list = st && st.dispatchLock && st.dispatchLock.drivers;
+  return list && list.length ? list.map(String) : null;
+}
+
 // Find the nearest online, approved delivery driver not already tried.
-async function findNearestDriver(pickupLngLat, excludeUserIds) {
+// `only`: a locked shop - nobody outside this list, at any distance.
+async function findNearestDriver(pickupLngLat, excludeUserIds, only) {
+  if (only) {
+    const ex = (excludeUserIds || []).map(String);
+    return DriverProfile.findOne({
+      status: 'approved',
+      isOnline: true,
+      services: 'delivery',
+      user: { $in: only.filter(function (u) { return ex.indexOf(u) === -1; }) },
+      locationUpdatedAt: { $gte: new Date(Date.now() - LOCATION_FRESH_MS) }
+    }).populate('user', 'name phone');
+  }
   const profile = await DriverProfile.findOne({
     status: 'approved',
     isOnline: true,
@@ -74,7 +95,8 @@ async function offerToNextDriver(ride, io) {
   if (ride.needsDriverPay) return null;
   const pickupLngLat = [lng(ride.pickup.coordinates), lat(ride.pickup.coordinates)];
   // never re-offer to a driver who already accepted this job and dropped it
-  const profile = await findNearestDriver(pickupLngLat, (ride.attemptedDrivers || []).concat(ride.droppedBy || []));
+  const profile = await findNearestDriver(pickupLngLat, (ride.attemptedDrivers || []).concat(ride.droppedBy || []),
+    await lockedDrivers(ride.store));
 
   if (!profile || !profile.user) {
     ride.offeredTo = null;
@@ -332,6 +354,7 @@ async function dispatchTick(io) {
 }
 
 module.exports = {
+  lockedDrivers,
   createDeliveryRideForOrder,
   returnToSearch,
   alertNoDriver,

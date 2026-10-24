@@ -104,10 +104,64 @@ router.post('/grant-admin', async (req, res) => {
     user.role = 'admin';
     await user.save();
     console.warn('Console granted admin to ' + user.phone + ' (' + user.name + ')');
+    require('../services/activity').record(consoleActor(req), 'admin.grant', { targetType: 'User', targetId: user._id, targetLabel: user.phone,
+      detail: { previousRole: user.previousRole } });
     res.json({ success: true, name: user.name, phone: user.phone, role: user.role });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+/* ═══ DEMO LOCK (24 Oct 2026, Jeffery: "OK DEMO LOCK") ═══════════════════════
+   GET    /dispatch-lock            the shops currently locked
+   POST   /dispatch-lock {store, phone}  reserve a shop's deliveries for ONE driver
+   DELETE /dispatch-lock/:storeId   back to normal dispatch, at once
+   Enforced in the dispatcher, in accept and in the "available" list. */
+async function findStore(ref) {
+  ref = String(ref || '').trim();
+  if (!ref) return null;
+  if (/^[0-9a-f]{24}$/i.test(ref)) return Store.findById(ref);
+  const slug = ref.replace(/^.*[?&]slug=/, '').replace(/[&#].*$/, '').toLowerCase();
+  return Store.findOne({ slug });
+}
+function lockView(s) {
+  return { storeId: s._id, name: s.name, slug: s.slug, since: s.dispatchLock && s.dispatchLock.since,
+           by: s.dispatchLock && s.dispatchLock.by,
+           drivers: ((s.dispatchLock && s.dispatchLock.drivers) || []).map(function (u) { return { name: u.name, phone: u.phone }; }) };
+}
+/* the console has no user: logged as the console code, with the caller's address */
+function consoleActor(req) { return { user: { name: 'Konsòl (kòd konsòl)', role: 'console' }, headers: req.headers, ip: req.ip }; }
+router.get('/dispatch-lock', async (req, res) => {
+  try {
+    const list = await Store.find({ 'dispatchLock.drivers.0': { $exists: true } }).populate('dispatchLock.drivers', 'name phone');
+    res.json({ success: true, locks: list.map(lockView) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.post('/dispatch-lock', async (req, res) => {
+  try {
+    const store = await findStore(req.body && req.body.store);
+    if (!store) return res.status(404).json({ error: 'No shop with that link or name' });
+    const user = await findByPhone(String((req.body && req.body.phone) || '').trim());
+    if (!user) return res.status(404).json({ error: 'No account with that phone number' });
+    const dp = await DriverProfile.findOne({ user: user._id }).select('status services');
+    if (!dp || (dp.services || []).indexOf('delivery') === -1) return res.status(400).json({ error: 'That account has no delivery-driver profile' });
+    store.dispatchLock = { drivers: [user._id], since: new Date(), by: 'console' };
+    await store.save();
+    require('../services/activity').record(consoleActor(req), 'store.dispatch_lock', { targetType: 'Store', targetId: store._id, targetLabel: store.name,
+      detail: { driver: user.phone, driverStatus: dp.status } });
+    const s2 = await Store.findById(store._id).populate('dispatchLock.drivers', 'name phone');
+    res.json({ success: true, lock: lockView(s2), driverStatus: dp.status });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.delete('/dispatch-lock/:storeId', async (req, res) => {
+  try {
+    const store = await Store.findById(req.params.storeId);
+    if (!store) return res.status(404).json({ error: 'No such shop' });
+    store.dispatchLock = { drivers: [], since: null, by: '' };
+    await store.save();
+    require('../services/activity').record(consoleActor(req), 'store.dispatch_unlock', { targetType: 'Store', targetId: store._id, targetLabel: store.name });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/revoke-admin', async (req, res) => {
@@ -127,6 +181,8 @@ router.post('/revoke-admin', async (req, res) => {
     user.role = user.previousRole && user.previousRole !== 'admin' ? user.previousRole : 'customer';
     await user.save();
     console.warn('Console revoked admin from ' + user.phone);
+    require('../services/activity').record(consoleActor(req), 'admin.revoke', { targetType: 'User', targetId: user._id, targetLabel: user.phone,
+      detail: { restoredRole: user.role } });
     res.json({ success: true, name: user.name, phone: user.phone, role: user.role });
   } catch (e) {
     res.status(500).json({ error: e.message });

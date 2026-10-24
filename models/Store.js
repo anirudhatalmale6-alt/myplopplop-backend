@@ -88,7 +88,17 @@ const storeSchema = new mongoose.Schema({
   isFeatured: { type: Boolean, default: false },
   // Who sent this merchant to us (SPAP, FTPH/COTRASMOTHA, Facebook, a friend...).
   // Set once at sign-up from the ?ref= on the partner's own link.
-  referralPartner: { type: String, trim: true, maxlength: 80 }
+  referralPartner: { type: String, trim: true, maxlength: 80 },
+  /* 24 Oct 2026 (Jeffery, "OK DEMO LOCK"): while `drivers` is non-empty, this
+     shop's deliveries are offered to, listed for and acceptable by ONLY these
+     drivers (who must still be approved, online and located). Nobody else -
+     if they are unavailable the order waits. Set and cleared from the
+     ecosystem console; empty = normal dispatch. Meant for a filmed demo. */
+  dispatchLock: {
+    drivers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    since: Date,
+    by: String
+  }
 }, {
   timestamps: true
 });
