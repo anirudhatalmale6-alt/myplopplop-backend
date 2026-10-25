@@ -124,6 +124,79 @@ router.post('/onboard', protect, upload.fields([
   }
 });
 
+/* POST /api/drivers/link-msouwout {pin} - "I am already a MsouWout driver".
+   24 Oct 2026, Jeffery: ONE DRIVER, ONE REGISTRATION. No form: the signed-in
+   MyPlopPlop account proves it holds the MsouWout driver account with the SAME
+   phone by giving THAT account's PIN (checked and counted by MsouWout). The
+   delivery profile is built from the MsouWout record and starts PENDING - an
+   administrator still approves deliveries, with the MsouWout documents in
+   front of him. The account keeps its role (an admin stays admin). */
+router.post('/link-msouwout', protect, async (req, res) => {
+  try {
+    const link = require('../utils/msouwoutLink');
+    const pin = String((req.body && req.body.pin) || '').trim();
+    if (!/^\d{4,8}$/.test(pin)) return res.status(400).json({ success: false, code: 'pin_required', message: 'Enter your MsouWout PIN' });
+    const r = await link.verify(req.user.phone, pin);
+    const e = r.data && r.data.error;
+    if (r.status !== 200) {
+      const map = {
+        no_driver: [404, 'No MsouWout driver has this phone number'],
+        several_drivers: [409, 'Several MsouWout drivers share this phone number - an administrator must check'],
+        no_pin: [409, 'Your MsouWout account has no PIN yet. Open the MsouWout driver app, set your PIN, then come back'],
+        pin_wrong: [401, 'Wrong MsouWout PIN' + (r.data.remaining != null ? ' (' + r.data.remaining + ' tries left)' : '')],
+        pin_locked: [429, 'Too many wrong PINs. Try again in ' + (r.data.minutes || 15) + ' minutes'],
+        link_not_configured: [503, 'The link to MsouWout is not configured'],
+        msouwout_unreachable: [504, 'MsouWout did not answer. Try again in a minute']
+      };
+      const m = map[e] || [502, 'MsouWout could not check this account'];
+      return res.status(m[0]).json({ success: false, code: e || 'error', message: m[1], remaining: r.data.remaining });
+    }
+    const d = r.data.driver || {};
+    if (d.status !== 'approved' || d.is_active === false) {
+      return res.status(409).json({ success: false, code: 'msouwout_not_approved',
+        message: 'Your MsouWout driver profile is not approved (' + d.status + '). It must be approved on MsouWout first.' });
+    }
+    const facts = {
+      driverId: String(d.id), linkedAt: new Date(), fullName: d.full_name, phone: d.phone, status: d.status,
+      licenseNumber: d.license_number || '',
+      vehicle: [d.vehicle_make, d.vehicle_model, d.vehicle_year].filter(Boolean).join(' '),
+      documents: r.data.documents || [], nameMatches: link.sameName(req.user.name, d.full_name)
+    };
+    const taken = await DriverProfile.findOne({ 'msouwout.driverId': facts.driverId, user: { $ne: req.user._id } }).select('_id');
+    if (taken) return res.status(409).json({ success: false, code: 'linked_elsewhere', message: 'This MsouWout driver is already linked to another MyPlopPlop account' });
+
+    let profile = await DriverProfile.findOne({ user: req.user._id });
+    if (profile) {
+      if (profile.msouwout && profile.msouwout.driverId && profile.msouwout.driverId !== facts.driverId) {
+        return res.status(409).json({ success: false, code: 'linked_other', message: 'This account is already linked to another MsouWout driver' });
+      }
+      profile.msouwout = facts;
+      if ((profile.services || []).indexOf('delivery') === -1) profile.services = (profile.services || []).concat('delivery');
+      await profile.save();
+    } else {
+      profile = await DriverProfile.create({
+        user: req.user._id,
+        vehicleType: link.VEHICLE[String(d.vehicle_type || '').toLowerCase()] || 'moto',
+        vehiclePlate: d.license_plate || ('MW-' + d.id),
+        vehicleModel: [d.vehicle_make, d.vehicle_model].filter(Boolean).join(' '),
+        vehicleColor: d.vehicle_color || '',
+        licenseNumber: d.license_number || ('MW-' + d.id),
+        services: ['delivery'],
+        status: 'pending',
+        msouwout: facts
+      });
+      if (!req.user.role || req.user.role === 'customer') {
+        await User.findByIdAndUpdate(req.user._id, { role: 'driver' });
+      }
+    }
+    require('../services/activity').record(req, 'driver.link_msouwout', { targetType: 'DriverProfile', targetId: profile._id,
+      targetLabel: profile.vehiclePlate, detail: { msouwoutId: facts.driverId, nameMatches: facts.nameMatches } });
+    res.json({ success: true, profile });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // GET /api/drivers/profile - Get own driver profile
 router.get('/profile', protect, driverAccess, async (req, res) => {
   try {

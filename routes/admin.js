@@ -91,6 +91,20 @@ router.get('/drivers', async (req, res) => {
   }
 });
 
+/* GET /api/admin/drivers/:id/msouwout-doc/:type - one MsouWout document of a
+   linked driver, fetched live for the approver (never stored here). */
+router.get('/drivers/:id/msouwout-doc/:type', async (req, res) => {
+  try {
+    const profile = await DriverProfile.findById(req.params.id).select('msouwout');
+    if (!profile || !profile.msouwout || !profile.msouwout.driverId) return res.status(404).json({ success: false, message: 'Not linked to MsouWout' });
+    const r = await require('../utils/msouwoutLink').document(profile.msouwout.driverId, req.params.type);
+    if (r.status !== 200) return res.status(r.status === 404 ? 404 : 502).json({ success: false, message: r.data.error || 'not available' });
+    res.json({ success: true, mime: r.data.mime, dataUrl: r.data.data_url });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // PUT /api/admin/drivers/:id/verify - Approve or reject a driver
 router.put('/drivers/:id/verify', async (req, res) => {
   try {

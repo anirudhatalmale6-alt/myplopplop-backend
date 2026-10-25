@@ -59,6 +59,21 @@ const driverProfileSchema = new mongoose.Schema({
     enum: ['delivery', 'ride']
   }],
 
+  /* 24 Oct 2026: linked to the driver's MsouWout record (the identity that
+     holds his documents). Set only by POST /api/drivers/link-msouwout, after
+     he proved that account with its PIN. Approval here is still separate. */
+  msouwout: {
+    driverId: String,
+    linkedAt: Date,
+    fullName: String,
+    phone: String,
+    status: String,             // his MsouWout status at link time
+    licenseNumber: String,
+    vehicle: String,            // "Suzuki Swift 2018"
+    documents: [String],        // which documents MsouWout holds
+    nameMatches: Boolean        // MyPlopPlop name vs MsouWout name
+  },
+
   // Location & availability
   isOnline: {
     type: Boolean,
