@@ -174,13 +174,15 @@ router.post('/login', [
       }
     }
 
-    if (!user) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    }
-
-    const isMatch = await user.matchPassword(password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    /* ONE LOGIN (1 Nov 2026): a MsouWout driver signs in here with his
+       MsouWout phone + PIN - see services/msouwoutDriver.js for who may. */
+    if (!user || !(await user.matchPassword(password))) {
+      let viaMsw = null;
+      try { viaMsw = await require('../services/msouwoutDriver').loginWithMsouwout(user, phone, password); }
+      catch (e) { console.warn('[ONE-DRIVER] login fallback failed: ' + e.message); }
+      if (!viaMsw) return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      if (viaMsw.refused) return res.status(403).json({ success: false, code: 'rides_only', message: viaMsw.refused });
+      user = viaMsw;
     }
 
     user.lastLogin = new Date();

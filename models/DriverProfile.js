@@ -71,7 +71,11 @@ const driverProfileSchema = new mongoose.Schema({
     licenseNumber: String,
     vehicle: String,            // "Suzuki Swift 2018"
     documents: [String],        // which documents MsouWout holds
-    nameMatches: Boolean        // MyPlopPlop name vs MsouWout name
+    nameMatches: Boolean,       // MyPlopPlop name vs MsouWout name
+    /* 1 Nov 2026: 'msouwout' = approved here BECAUSE MsouWout approved him (one
+       verification) - and then it follows MsouWout (services/msouwoutDriver.js) */
+    approvedVia: String,
+    approvedBy: String
   },
 
   // Location & availability

@@ -156,6 +156,8 @@ router.post('/link-msouwout', protect, async (req, res) => {
       return res.status(409).json({ success: false, code: 'msouwout_not_approved',
         message: 'Your MsouWout driver profile is not approved (' + d.status + '). It must be approved on MsouWout first.' });
     }
+    const one = require('../services/msouwoutDriver');
+    if (!one.deliveryOk(d)) return res.status(409).json({ success: false, code: 'rides_only', message: one.RIDES_ONLY });
     const facts = {
       driverId: String(d.id), linkedAt: new Date(), fullName: d.full_name, phone: d.phone, status: d.status,
       licenseNumber: d.license_number || '',
@@ -172,9 +174,11 @@ router.post('/link-msouwout', protect, async (req, res) => {
       }
       profile.msouwout = facts;
       if ((profile.services || []).indexOf('delivery') === -1) profile.services = (profile.services || []).concat('delivery');
+      /* one verification: a PENDING profile with the same name is approved by MsouWout's approval */
+      require('../services/msouwoutDriver').applyOneVerification(profile, d, facts);
       await profile.save();
     } else {
-      profile = await DriverProfile.create({
+      profile = new DriverProfile({
         user: req.user._id,
         vehicleType: link.VEHICLE[String(d.vehicle_type || '').toLowerCase()] || 'moto',
         vehiclePlate: d.license_plate || ('MW-' + d.id),
@@ -185,6 +189,8 @@ router.post('/link-msouwout', protect, async (req, res) => {
         status: 'pending',
         msouwout: facts
       });
+      require('../services/msouwoutDriver').applyOneVerification(profile, d, facts);
+      await profile.save();
       if (!req.user.role || req.user.role === 'customer') {
         await User.findByIdAndUpdate(req.user._id, { role: 'driver' });
       }
@@ -235,6 +241,12 @@ router.put('/location', protect, driverAccess, async (req, res) => {
 router.put('/online', protect, driverAccess, async (req, res) => {
   try {
     const { isOnline } = req.body;
+    if (isOnline) {
+      const mine = await DriverProfile.findOne({ user: req.user._id });
+      if (mine && !(await require('../services/msouwoutDriver').stillApproved(mine))) {
+        return res.status(403).json({ success: false, message: 'Your driver account is ' + mine.status });
+      }
+    }
     const profile = await DriverProfile.findOneAndUpdate(
       { user: req.user._id },
       { isOnline },

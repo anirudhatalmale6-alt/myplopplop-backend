@@ -25,6 +25,7 @@ async function ask(method, path, body) {
 }
 
 const verify = (phone, pin) => ask('POST', '/api/drivers/internal/link-verify', { phone, pin });
+const status = (id) => ask('GET', '/api/drivers/internal/' + encodeURIComponent(id) + '/status');
 const document = (id, type) => ask('GET', '/api/drivers/internal/' + encodeURIComponent(id) + '/document/' + encodeURIComponent(type));
 
 /* "Jean Baptiste" vs "JEAN  BAPTISTE Junior": the shorter name's words all
@@ -42,4 +43,4 @@ function sameName(a, b) {
 }
 const VEHICLE = { motorcycle: 'moto', moto: 'moto', car: 'car', truck: 'truck', van: 'truck' };
 
-module.exports = { verify, document, sameName, VEHICLE, BASE };
+module.exports = { verify, status, document, sameName, VEHICLE, BASE };

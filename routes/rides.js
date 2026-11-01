@@ -160,6 +160,9 @@ router.put('/:id/accept', protect, driverAccess, async (req, res) => {
     if (!myProfile) {
       return res.status(403).json({ success: false, message: 'No driver profile' });
     }
+    if (myProfile.status === 'approved' && !(await require('../services/msouwoutDriver').stillApproved(myProfile))) {
+      return res.status(403).json({ success: false, message: 'Your driver account is ' + myProfile.status });
+    }
     if (myProfile.status !== 'approved') {
       return res.status(403).json({
         success: false,
