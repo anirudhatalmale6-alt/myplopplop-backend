@@ -122,9 +122,31 @@ router.put('/drivers/:id/verify', async (req, res) => {
     }
 
     if (action === 'approve') {
+      /* 3 Nov 2026 (Jeffery): "No admin button or alternative approval route should bypass [the server-side
+         approval checks]" + "verify that MyPlopPlop delivery dispatch also blocks unapproved drivers".
+         ONE verification: a delivery profile is approved only when its MsouWout driver is approved there
+         (documents + valid OAVCT checked by MsouWout) and allowed to deliver. It then follows MsouWout. */
+      const m = profile.msouwout || {};
+      if (!m.driverId) {
+        return res.status(409).json({ success: false, code: 'MSOUWOUT_REQUIRED',
+          message: 'Approval happens on MsouWout (Jennifer’s console). Link this driver to his MsouWout account first.' });
+      }
+      const one = require('../services/msouwoutDriver');
+      const st = await require('../utils/msouwoutLink').status(m.driverId);
+      if (st.status !== 200) {
+        return res.status(st.status === 404 ? 409 : 503).json({ success: false, code: 'MSOUWOUT_CHECK',
+          message: st.status === 404 ? 'This MsouWout driver no longer exists.' : 'MsouWout cannot be reached right now - try again in a minute.' });
+      }
+      if (!one.approvedThere(st.data)) {
+        return res.status(409).json({ success: false, code: 'MSOUWOUT_NOT_APPROVED',
+          message: 'Not approved on MsouWout yet (' + (st.data.status || '?') + '). Jennifer approves him there once every document and a valid OAVCT are in.' });
+      }
+      if (!one.deliveryOk(st.data)) return res.status(409).json({ success: false, code: 'RIDES_ONLY', message: one.RIDES_ONLY });
       profile.status = 'approved';
       profile.verifiedBy = req.user._id;
       profile.verifiedAt = new Date();
+      profile.msouwout.approvedVia = 'msouwout';
+      profile.msouwout.approvedBy = String(st.data.reviewed_by || '').slice(0, 80);
     } else if (action === 'reject') {
       profile.status = 'rejected';
       profile.rejectionReason = reason || 'Documents not valid';
