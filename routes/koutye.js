@@ -1102,7 +1102,7 @@ router.post('/register-public', async (req, res) => {
     let attempts = 0;
     while (attempts < 10) {
       const clash = await ParenajSignup.findOne({ koutyeCode });
-      const clashKoutye = Koutye ? await Koutye.findOne({ koutyeCode }) : null;
+      const clashKoutye = Koutye ? await Koutye.findOne({ $or: [{ koutyeCode }, { retiredCodes: koutyeCode }] }) : null;
       if (!clash && !clashKoutye) break;
       koutyeCode = generateKoutyeCode(name);
       attempts++;

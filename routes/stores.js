@@ -15,6 +15,8 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const { protect, authorize } = require('../middleware/auth');
 const referralService = require('../services/referral');
+const merchantVerify = require('../services/merchantVerify');
+const MerchantDocument = require('../models/MerchantDocument');
 
 // ─── GET ALL ACTIVE STORES (public) ───
 router.get('/', async function(req, res) {
@@ -107,6 +109,19 @@ router.post('/', protect, [
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
+    /* 4 Nov 2026: registered by an Ajan from LajanMaker (agentPhone) → waits for Jennifer. A second call
+       for the same account (an answer lost on a weak connection) gets ITS store back, never a second one. */
+    var byAjan = !!req.body.agentPhone;
+    if (byAjan) {
+      var mine = await Store.findOne({ owner: req.user._id });
+      if (mine) return res.status(200).json({ success: true, resumed: true, data: mine });
+    }
+    /* ...and a business waiting for (or refused by) Jennifer cannot open a second, public store around it */
+    if (!byAjan) {
+      var held = await Store.findOne({ owner: req.user._id }).select('+verification');
+      if (held && merchantVerify.waiting(held)) return res.status(409).json({ success: false, error: 'store_waiting_verification',
+        message: 'Your store is waiting for verification. It opens as soon as it is approved.' });
+    }
     // Set user role to merchant if not already
     var user = await require('../models/User').findById(req.user._id);
     if (user.role === 'customer') {
@@ -125,8 +140,8 @@ router.post('/', protect, [
       logo: req.body.logo || '',
       coverImage: req.body.coverImage || '',
       deliveryOptions: req.body.deliveryOptions || {},
-      status: 'active',
-      isVerified: true, // auto-verify new merchant stores on signup
+      status: byAjan ? 'pending' : 'active',
+      isVerified: !byAjan, // self sign-ups unchanged; an Ajan's registration is verified by Jennifer
       referralPartner: req.body.referralPartner || undefined
     });
 
@@ -138,6 +153,11 @@ router.post('/', protect, [
     var agentCode = req.body.koutyeCode || req.body.agentCode || req.body.ref;
     /* From the LajanMaker POS: the Ajan who registered this shop, by phone. */
     if (!agentCode && req.body.agentPhone) agentCode = await referralService.koutyeCodeForPhone(req.body.agentPhone);
+    if (byAjan) {
+      await Store.updateOne({ _id: store._id }, { $set: { verification: { state: 'pending', source: 'lajanmaker',
+        agentPhone: String(req.body.agentPhone).slice(0, 32), agentCode: agentCode ? String(agentCode).toUpperCase() : '',
+        history: [{ at: new Date(), by: 'ajan', action: 'registered', note: agentCode ? 'Ajan ' + agentCode : 'no Ajan code' }] } } });
+    }
     var refResult = await referralService.attachReferral({
       code: agentCode,
       platform: 'myplopplop',
@@ -176,10 +196,63 @@ router.post('/', protect, [
   }
 });
 
+/* ─── 4 Nov 2026: VERIFICATION PHOTOS (owner) ─── the storefront and the owner's ID, sent by LajanMaker with the
+   merchant's own session right after registration (retried like the driver photos). Only while the store waits
+   (pending / corrections asked). Stored privately in MerchantDocument - never on the store. */
+var VDOC = ['storefront', 'owner_id'];
+router.post('/:id/verification-docs', protect, async function (req, res) {
+  try {
+    if (!/^[0-9a-fA-F]{24}$/.test(String(req.params.id))) return res.status(404).json({ success: false, message: 'Store not found' });
+    var store = await Store.findById(req.params.id).select('+verification');
+    if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+    if (store.owner.toString() !== req.user._id.toString()) return res.status(403).json({ success: false, message: 'Not authorized' });
+    var r = await saveVerificationDoc(store, req.body || {}, 'merchant');
+    res.status(r.code).json(r.body);
+  } catch (err) {
+    console.error('verification doc error:', err.message);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+async function saveVerificationDoc(store, b, by) {
+  var v = store.verification || {};
+  if (['pending', 'fix'].indexOf(v.state) < 0) return { code: 409, body: { success: false, error: 'not_waiting' } };
+  var type = String(b.type || ''), m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(b.image_data || ''));
+  if (VDOC.indexOf(type) < 0) return { code: 400, body: { success: false, error: 'bad_type' } };
+  if (!m) return { code: 400, body: { success: false, error: 'bad_image' } };
+  if (m[2].length > 7 * 1024 * 1024) return { code: 413, body: { success: false, error: 'too_large' } };
+  await MerchantDocument.findOneAndUpdate({ store: store._id, type: type },
+    { $set: { mime: m[1], data: m[2], size: Math.round(m[2].length * 0.75), by: by } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+  var fix = (v.fixDocs || []).filter(function (t) { return t !== type; });
+  var set = { 'verification.fixDocs': fix };
+  if (v.state === 'fix' && !fix.length) set['verification.state'] = 'pending';
+  await Store.updateOne({ _id: store._id }, { $set: set, $push: { 'verification.history': { at: new Date(), by: by, action: 'document', note: type } } });
+  return { code: 201, body: { success: true, type: type } };
+}
+router.saveVerificationDoc = saveVerificationDoc;
+
+/* ─── 4 Nov 2026: what became of the businesses THIS phone registered (public, by store id) ─── status words
+   only: no name, phone or document. The public link only once the store is approved and active. */
+router.post('/status-batch', async function (req, res) {
+  try {
+    var ids = ((req.body && req.body.ids) || []).map(String).filter(function (x) { return /^[0-9a-fA-F]{24}$/.test(x); }).slice(0, 100);
+    if (!ids.length) return res.json({ stores: [] });
+    var rows = await Store.find({ _id: { $in: ids } }).select('+verification status slug').lean();
+    var docs = await MerchantDocument.find({ store: { $in: ids } }).select('store type').lean();
+    res.set('Cache-Control', 'no-store');
+    res.json({ stores: rows.map(function (x) { var v = x.verification || {};
+      return { id: String(x._id), state: v.state || (x.status === 'active' ? 'approved' : x.status), status: x.status,
+        fix: v.fixDocs || [], note: v.state === 'fix' ? (v.fixNote || '') : '', reason: v.state === 'rejected' ? (v.reason || '') : '',
+        docs: docs.filter(function (d) { return String(d.store) === String(x._id); }).map(function (d) { return d.type; }),
+        slug: x.status === 'active' ? x.slug : '' }; }) });
+  } catch (err) {
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
 // ─── UPDATE STORE (owner only) ───
 router.put('/:id', protect, async function(req, res) {
   try {
-    var store = await Store.findById(req.params.id);
+    var store = await Store.findById(req.params.id).select('+verification');
     if (!store) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
@@ -188,6 +261,8 @@ router.put('/:id', protect, async function(req, res) {
     }
 
     var allowed = ['name', 'description', 'category', 'phone', 'email', 'address', 'openingHours', 'deliveryOptions', 'logo', 'coverImage', 'status'];
+    /* 4 Nov 2026: a store waiting for Jennifer cannot switch itself on (or anything else) - only her approval does */
+    if (merchantVerify.waiting(store)) allowed = allowed.filter(function (f) { return f !== 'status'; });
     allowed.forEach(function(field) {
       if (req.body[field] !== undefined) store[field] = req.body[field];
     });
@@ -312,7 +387,8 @@ router.get('/:id/orders', protect, async function(req, res) {
 // ─── ADMIN: Activate all pending stores ───
 router.patch('/admin/activate-all', protect, authorize('admin'), async function(req, res) {
   try {
-    var result = await Store.updateMany({ status: 'pending' }, { $set: { status: 'active' } });
+    /* never the stores waiting for Jennifer's verification (4 Nov 2026) */
+    var result = await Store.updateMany(Object.assign({ status: 'pending' }, merchantVerify.notWaiting), { $set: { status: 'active' } });
     res.json({ success: true, activated: result.modifiedCount || result.nModified || 0 });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error' });

@@ -90,6 +90,8 @@ ajanInternal.use(require('./utils/internalKey'));
 ajanInternal.get('/ajan-code', adminPinRoutes.ajan.lookup);
 ajanInternal.post('/ajan-code', adminPinRoutes.ajan.create);
 ajanInternal.post('/ajan-code/rename', adminPinRoutes.ajan.rename);
+/* 4 Nov 2026: Jennifer's merchant verification (console code checked on haitibiznis-api) */
+ajanInternal.use('/merchants', require('./routes/merchantVerification'));
 ajanInternal.post('/ajan-performance', adminPinRoutes.ajan.performance);
 app.use('/api/internal', ajanInternal);
 /* Partner organizations: the dashboard built in June, finally given its data. */

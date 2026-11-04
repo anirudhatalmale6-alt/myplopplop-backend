@@ -415,10 +415,14 @@ router.get('/stores', async (req, res) => {
 // Verify / approve / suspend a store from the admin panel
 router.patch('/stores/:id', async (req, res) => {
   try {
-    const store = await Store.findById(req.params.id);
+    const store = await Store.findById(req.params.id).select('+verification');
     if (!store) return res.status(404).json({ error: 'Store not found' });
 
     const { action, isVerified, status } = req.body;
+    /* 4 Nov 2026: a store registered by an Ajan becomes active/verified ONLY through Jennifer's review */
+    if (require('../services/merchantVerify').waiting(store) && (action === 'verify' || action === 'activate' || status === 'active' || isVerified === true)) {
+      return res.status(409).json({ error: 'needs_verification', message: 'This store waits for verification: approve it in the merchant console (machann-admin).' });
+    }
 
     if (action === 'verify') { store.isVerified = true; store.status = 'active'; }
     else if (action === 'unverify') { store.isVerified = false; }
@@ -916,7 +920,7 @@ function newKoutyeCode(name) {
 async function codeTaken(code) {
   const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp('^' + esc + '$', 'i');
-  return !!((Koutye && await Koutye.exists({ koutyeCode: re })) ||
+  return !!((Koutye && (await Koutye.exists({ koutyeCode: re }) || await Koutye.exists({ retiredCodes: re }))) ||
             (ParenajSignup && await ParenajSignup.exists({ koutyeCode: re })));
 }
 
@@ -1064,7 +1068,7 @@ async function ajanRename(req, res) {
     const k = await koutyeByPhone(key);
     if (!k || String(k.koutyeCode).toUpperCase() !== from) return res.status(409).json({ error: 'from_not_this_phone' });
     const esc = to.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), re = new RegExp('^' + esc + '$', 'i');
-    if (await Koutye.exists({ koutyeCode: re, _id: { $ne: k._id } })) return res.status(409).json({ error: 'code_taken' });
+    if (await Koutye.exists({ $or: [{ koutyeCode: re }, { retiredCodes: re }], _id: { $ne: k._id } })) return res.status(409).json({ error: 'code_taken' });
     const signup = await ParenajSignup.findOne({ koutyeCode: re });
     if (!signup) return res.status(409).json({ error: 'no_signup_with_this_code' });
     const sameSub = refPhoneKey(signup.phone) === key, sameName = normName(signup.name) && normName(signup.name) === normName(k.user && k.user.name);
@@ -1072,7 +1076,9 @@ async function ajanRename(req, res) {
     const refs = KoutyeReferral ? await KoutyeReferral.countDocuments({ koutye: k._id }) : 0;
     const coms = KoutyeCommission ? await KoutyeCommission.countDocuments({ koutye: k._id }) : 0;
     if (refs || coms) return res.status(409).json({ error: 'old_code_already_used', referrals: refs, commissions: coms });
-    await Koutye.updateOne({ _id: k._id }, { $set: { koutyeCode: to } });
+    /* the old code is RETIRED (kept on this account, never issued again, earns nothing new) */
+    await Koutye.updateOne({ _id: k._id }, { $set: { koutyeCode: to }, $addToSet: { retiredCodes: from },
+      $push: { codeHistory: { from, to, at: new Date(), by: String(b.by || 'console').slice(0, 60) } } });
     if (signup.status !== 'approved') { signup.status = 'approved'; await signup.save(); }
     try { require('../services/activity').record(consoleActor(req), 'koutye.code_rename',
       { targetType: 'Koutye', targetId: k._id, targetLabel: from + ' -> ' + to }); } catch (e) {}

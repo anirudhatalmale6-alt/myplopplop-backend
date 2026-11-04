@@ -12,6 +12,11 @@ const koutyeSchema = new mongoose.Schema({
     unique: true,
     required: true
   },
+  /* 4 Nov 2026 (Jeffery: "The old code cannot be reassigned to another Ajan or accidentally used for new
+     referrals ... historical records remain traceable"): codes this Ajan used before (never handed out again)
+     and when each change happened. */
+  retiredCodes: { type: [String], default: [] },
+  codeHistory: [{ _id: false, from: String, to: String, at: Date, by: String }],
   status: {
     type: String,
     enum: ['active', 'suspended', 'inactive'],

@@ -85,6 +85,29 @@ const storeSchema = new mongoose.Schema({
     default: 'active'
   },
   isVerified: { type: Boolean, default: false },
+  /* 4 Nov 2026 (Jeffery, "MYPLOPPLOP — YES, APPROVED"): a business an Ajan registers from LajanMaker waits
+     for Jennifer (status 'pending', not public, no orders) until she approves it. Absent on stores created
+     before that - those stay exactly as they were (review.* is only her note on them). Hidden from every
+     store answer by default (select:false): agent phone, decisions and notes are staff-only. The owner's
+     ID photo is NOT here at all - models/MerchantDocument.js. */
+  verification: {
+    type: new mongoose.Schema({
+      state: { type: String, enum: ['pending', 'fix', 'approved', 'rejected'] },
+      source: String,
+      agentPhone: String,
+      agentCode: String,
+      fixDocs: [String],
+      fixNote: String,
+      reason: String,
+      decidedBy: String,
+      decidedAt: Date,
+      welcomeBy: String,
+      welcomeAt: Date,
+      review: { state: String, by: String, at: Date, note: String },
+      history: [{ _id: false, at: { type: Date, default: Date.now }, by: String, action: String, note: String }]
+    }, { _id: false }),
+    select: false
+  },
   isFeatured: { type: Boolean, default: false },
   // Who sent this merchant to us (SPAP, FTPH/COTRASMOTHA, Facebook, a friend...).
   // Set once at sign-up from the ?ref= on the partner's own link.

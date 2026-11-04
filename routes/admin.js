@@ -281,10 +281,16 @@ router.get('/stores', async (req, res) => {
 // PATCH /api/admin/stores/:id - verify / unverify / suspend / activate
 router.patch('/stores/:id', async (req, res) => {
   try {
-    const store = await Store.findById(req.params.id);
+    const store = await Store.findById(req.params.id).select('+verification');
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
 
     const action = req.body.action;
+    /* 4 Nov 2026: a store registered by an Ajan becomes active/verified ONLY through Jennifer's review */
+    if (require('../services/merchantVerify').waiting(store) && (action === 'verify' || action === 'activate'
+        || req.body.status === 'active' || req.body.isVerified === true)) {
+      return res.status(409).json({ success: false, error: 'needs_verification',
+        message: 'This store waits for verification: approve it in the merchant console (machann-admin).' });
+    }
     if (action === 'verify') store.isVerified = true;
     else if (action === 'unverify') store.isVerified = false;
     else if (action === 'suspend') store.status = 'suspended';
