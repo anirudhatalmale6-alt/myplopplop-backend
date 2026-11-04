@@ -140,8 +140,10 @@ router.post('/', protect, [
       logo: req.body.logo || '',
       coverImage: req.body.coverImage || '',
       deliveryOptions: req.body.deliveryOptions || {},
-      status: byAjan ? 'pending' : 'active',
-      isVerified: !byAjan, // self sign-ups unchanged; an Ajan's registration is verified by Jennifer
+      /* Jeffery 4 Nov: "All NEW MyPlopPlop merchants must go through Jennifer's verification process,
+         including those registering directly on myplopplop.com" - every new store waits */
+      status: 'pending',
+      isVerified: false,
       referralPartner: req.body.referralPartner || undefined
     });
 
@@ -153,11 +155,11 @@ router.post('/', protect, [
     var agentCode = req.body.koutyeCode || req.body.agentCode || req.body.ref;
     /* From the LajanMaker POS: the Ajan who registered this shop, by phone. */
     if (!agentCode && req.body.agentPhone) agentCode = await referralService.koutyeCodeForPhone(req.body.agentPhone);
-    if (byAjan) {
-      await Store.updateOne({ _id: store._id }, { $set: { verification: { state: 'pending', source: 'lajanmaker',
-        agentPhone: String(req.body.agentPhone).slice(0, 32), agentCode: agentCode ? String(agentCode).toUpperCase() : '',
-        history: [{ at: new Date(), by: 'ajan', action: 'registered', note: agentCode ? 'Ajan ' + agentCode : 'no Ajan code' }] } } });
-    }
+    /* every new store: waiting for Jennifer, with where it came from (agentCode is filled in below only when
+       the Ajan credit was really attached - a typed code that does not exist credits nobody) */
+    await Store.updateOne({ _id: store._id }, { $set: { verification: { state: 'pending', source: byAjan ? 'lajanmaker' : 'website',
+      agentPhone: byAjan ? String(req.body.agentPhone).slice(0, 32) : '', agentCode: '',
+      history: [{ at: new Date(), by: byAjan ? 'ajan' : 'merchant', action: 'registered', note: byAjan ? 'LajanMaker' : 'myplopplop.com' }] } } });
     var refResult = await referralService.attachReferral({
       code: agentCode,
       platform: 'myplopplop',
@@ -168,6 +170,9 @@ router.post('/', protect, [
       email: store.email || user.email,
       source: 'Store registration: ' + store.name
     });
+    /* the Ajan credited for this business (first agent wins - may be an earlier agent than the code typed) */
+    var credited = refResult && refResult.referral && refResult.referral.koutyeCode ? String(refResult.referral.koutyeCode).toUpperCase() : '';
+    if (credited) await Store.updateOne({ _id: store._id }, { $set: { 'verification.agentCode': credited } });
     // Someone the agent signed up as a customer has now opened a shop. Same
     // referral, same 12 months - but the report should call them a merchant.
     if (!refResult.attached && refResult.reason === 'already_referred' && refResult.referral) {
@@ -229,6 +234,22 @@ async function saveVerificationDoc(store, b, by) {
   return { code: 201, body: { success: true, type: type } };
 }
 router.saveVerificationDoc = saveVerificationDoc;
+
+/* ─── 4 Nov 2026: the merchant's own verification status (dashboard / registration page) ─── */
+router.get('/my/verification', protect, async function (req, res) {
+  try {
+    var st = await Store.findOne({ owner: req.user._id }).select('+verification');
+    if (!st) return res.status(404).json({ success: false, error: 'no_store' });
+    var v = st.verification || {};
+    var docs = await MerchantDocument.find({ store: st._id }).select('type').lean();
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, storeId: String(st._id), name: st.name, status: st.status, slug: st.status === 'active' ? st.slug : '',
+      state: v.state || (st.status === 'active' ? 'approved' : st.status), fix: v.fixDocs || [], note: v.state === 'fix' ? (v.fixNote || '') : '',
+      reason: v.state === 'rejected' ? (v.reason || '') : '', docs: docs.map(function (d) { return d.type; }) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 
 /* ─── 4 Nov 2026: what became of the businesses THIS phone registered (public, by store id) ─── status words
    only: no name, phone or document. The public link only once the store is approved and active. */
