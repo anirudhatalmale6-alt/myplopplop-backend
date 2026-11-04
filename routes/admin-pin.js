@@ -1070,16 +1070,19 @@ async function ajanRename(req, res) {
     const esc = to.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), re = new RegExp('^' + esc + '$', 'i');
     if (await Koutye.exists({ $or: [{ koutyeCode: re }, { retiredCodes: re }], _id: { $ne: k._id } })) return res.status(409).json({ error: 'code_taken' });
     const signup = await ParenajSignup.findOne({ koutyeCode: re });
-    if (!signup) return res.status(409).json({ error: 'no_signup_with_this_code' });
-    const sameSub = refPhoneKey(signup.phone) === key, sameName = normName(signup.name) && normName(signup.name) === normName(k.user && k.user.name);
-    if (!sameSub && !sameName) return res.status(409).json({ error: 'signup_not_hers' });
+    /* 4 Nov 2026: koutye.html used to SHOW a code it made up when the server did not answer (JC-JENN7 exists
+       nowhere). A code that nobody holds - no Ajan, no retired code, no sign-up - may simply become this Ajan's. */
+    if (signup) {
+      const sameSub = refPhoneKey(signup.phone) === key, sameName = normName(signup.name) && normName(signup.name) === normName(k.user && k.user.name);
+      if (!sameSub && !sameName) return res.status(409).json({ error: 'signup_not_hers' });
+    }
     const refs = KoutyeReferral ? await KoutyeReferral.countDocuments({ koutye: k._id }) : 0;
     const coms = KoutyeCommission ? await KoutyeCommission.countDocuments({ koutye: k._id }) : 0;
     if (refs || coms) return res.status(409).json({ error: 'old_code_already_used', referrals: refs, commissions: coms });
     /* the old code is RETIRED (kept on this account, never issued again, earns nothing new) */
     await Koutye.updateOne({ _id: k._id }, { $set: { koutyeCode: to }, $addToSet: { retiredCodes: from },
       $push: { codeHistory: { from, to, at: new Date(), by: String(b.by || 'console').slice(0, 60) } } });
-    if (signup.status !== 'approved') { signup.status = 'approved'; await signup.save(); }
+    if (signup && signup.status !== 'approved') { signup.status = 'approved'; await signup.save(); }
     try { require('../services/activity').record(consoleActor(req), 'koutye.code_rename',
       { targetType: 'Koutye', targetId: k._id, targetLabel: from + ' -> ' + to }); } catch (e) {}
     console.log('[AJAN CODE] ' + from + ' renamed to ' + to + ' (own sign-up, same account)');
