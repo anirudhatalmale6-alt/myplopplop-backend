@@ -1049,13 +1049,49 @@ async function ajanPerformance(req, res) {
   }
 }
 
+/* POST /ajan-code/rename {phone, from, to} - 4 Nov 2026 (Jennifer: "Mwen bezwen gen menm code lan JC-JENN7").
+   Her console-made code KB-… replaced by the code of HER OWN koutye.html sign-up, on the SAME Koutye account.
+   Only when: this phone's Ajan code is `from`; `from` has earned nothing yet (no referral, no commission);
+   `to` is that pending sign-up's code and the sign-up is hers (same phone or same name); `to` is nobody's
+   active code. The sign-up is then marked approved. Never touches anyone else's code. */
+function normName(n) { return String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]+/g, ' ').trim(); }
+async function ajanRename(req, res) {
+  try {
+    if (!Koutye || !ParenajSignup) return res.status(500).json({ error: 'agent models are not loaded' });
+    const b = req.body || {}, key = refPhoneKey(b.phone);
+    const from = String(b.from || '').trim().toUpperCase(), to = String(b.to || '').trim().toUpperCase();
+    if (!key || key.length < 8 || !from || !/^[A-Z0-9][A-Z0-9-]{2,19}$/.test(to)) return res.status(400).json({ error: 'bad_request' });
+    const k = await koutyeByPhone(key);
+    if (!k || String(k.koutyeCode).toUpperCase() !== from) return res.status(409).json({ error: 'from_not_this_phone' });
+    const esc = to.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), re = new RegExp('^' + esc + '$', 'i');
+    if (await Koutye.exists({ koutyeCode: re, _id: { $ne: k._id } })) return res.status(409).json({ error: 'code_taken' });
+    const signup = await ParenajSignup.findOne({ koutyeCode: re });
+    if (!signup) return res.status(409).json({ error: 'no_signup_with_this_code' });
+    const sameSub = refPhoneKey(signup.phone) === key, sameName = normName(signup.name) && normName(signup.name) === normName(k.user && k.user.name);
+    if (!sameSub && !sameName) return res.status(409).json({ error: 'signup_not_hers' });
+    const refs = KoutyeReferral ? await KoutyeReferral.countDocuments({ koutye: k._id }) : 0;
+    const coms = KoutyeCommission ? await KoutyeCommission.countDocuments({ koutye: k._id }) : 0;
+    if (refs || coms) return res.status(409).json({ error: 'old_code_already_used', referrals: refs, commissions: coms });
+    await Koutye.updateOne({ _id: k._id }, { $set: { koutyeCode: to } });
+    if (signup.status !== 'approved') { signup.status = 'approved'; await signup.save(); }
+    try { require('../services/activity').record(consoleActor(req), 'koutye.code_rename',
+      { targetType: 'Koutye', targetId: k._id, targetLabel: from + ' -> ' + to }); } catch (e) {}
+    console.log('[AJAN CODE] ' + from + ' renamed to ' + to + ' (own sign-up, same account)');
+    const k2 = await koutyeByPhone(key);
+    res.json({ success: true, agent: codeView(k2, key) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 router.get('/ajan-code', ajanLookup);
 router.post('/ajan-code', ajanCreate);
+router.post('/ajan-code/rename', ajanRename);
 router.post('/ajan-performance', ajanPerformance);
 
 /* The same three, for haitibiznis-api's console server to server (mounted in
    server.js behind the shared INTERNAL_SERVICE_KEY), so Jennifer needs only the
    one console code she already has. */
-router.ajan = { lookup: ajanLookup, create: ajanCreate, performance: ajanPerformance };
+router.ajan = { lookup: ajanLookup, create: ajanCreate, performance: ajanPerformance, rename: ajanRename };
 
 module.exports = router;

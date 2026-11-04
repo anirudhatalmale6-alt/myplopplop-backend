@@ -89,6 +89,7 @@ const ajanInternal = express.Router();
 ajanInternal.use(require('./utils/internalKey'));
 ajanInternal.get('/ajan-code', adminPinRoutes.ajan.lookup);
 ajanInternal.post('/ajan-code', adminPinRoutes.ajan.create);
+ajanInternal.post('/ajan-code/rename', adminPinRoutes.ajan.rename);
 ajanInternal.post('/ajan-performance', adminPinRoutes.ajan.performance);
 app.use('/api/internal', ajanInternal);
 /* Partner organizations: the dashboard built in June, finally given its data. */
