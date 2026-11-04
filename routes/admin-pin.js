@@ -1104,17 +1104,35 @@ async function ajanNewPin(req, res) {
     const b = req.body || {}, key = refPhoneKey(b.phone);
     const k = await koutyeByCode(b.code);
     if (!k || !k.user) return res.status(404).json({ error: 'no_code' });
-    if (!key || key.length < 8 || refPhoneKey(k.user.phone) !== key) return res.status(409).json({ error: 'not_this_phone' });
+    if (!key || key.length < 8) return res.status(409).json({ error: 'not_this_phone' });
     const user = await User.findById(k.user._id).select('+password role phone name');
     if (!user) return res.status(404).json({ error: 'no_account' });
     if (user.role !== 'customer') return res.status(409).json({ error: 'own_account', role: user.role });
+    /* 4 Nov 2026 (Jennifer, Louisena …8403 → …8703): the badge phone was corrected, the account kept the typo.
+       Same code AND same name AND the corrected number belongs to no other account ⇒ the account takes the badge
+       phone (login + WhatsApp + payout number when they held the old typo). Anything else stays refused. */
+    let phoneFixed = null;
+    if (refPhoneKey(user.phone) !== key) {
+      if (!normName(b.name) || normName(b.name) !== normName(user.name)) return res.status(409).json({ error: 'not_this_phone' });
+      const others = await User.find({ phone: tailRe(key), _id: { $ne: user._id } }).select('_id').limit(1).lean();
+      if (others.length) return res.status(409).json({ error: 'phone_in_use' });
+      const oldKey = refPhoneKey(user.phone), newPhone = String(b.phone || '').replace(/[^0-9+]/g, '').slice(0, 20);
+      phoneFixed = { from: user.phone, to: newPhone };
+      user.phone = newPhone;
+      const kset = {};
+      if (refPhoneKey(k.whatsapp) === oldKey) kset.whatsapp = newPhone;
+      if (k.payoutDetails && refPhoneKey(k.payoutDetails.phone) === oldKey) kset['payoutDetails.phone'] = newPhone;
+      if (Object.keys(kset).length) await Koutye.updateOne({ _id: k._id }, { $set: kset });
+    }
     const tempPin = String(crypto.randomInt(1000, 10000));
     user.password = tempPin;
     await user.save();
     try { require('../services/activity').record(consoleActor(req), 'koutye.new_pin',
       { targetType: 'User', targetId: user._id, targetLabel: k.koutyeCode + ' ' + String(b.by || 'console').slice(0, 60) }); } catch (e) {}
+    if (phoneFixed) try { require('../services/activity').record(consoleActor(req), 'koutye.phone_fix',
+      { targetType: 'User', targetId: user._id, targetLabel: k.koutyeCode + ' ' + phoneFixed.from + ' -> ' + phoneFixed.to }); } catch (e) {}
     console.log('[AJAN PIN] new PIN made for ' + k.koutyeCode);
-    res.json({ success: true, tempPin, phone: user.phone, code: k.koutyeCode });
+    res.json({ success: true, tempPin, phone: user.phone, code: k.koutyeCode, phoneFixed: !!phoneFixed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
