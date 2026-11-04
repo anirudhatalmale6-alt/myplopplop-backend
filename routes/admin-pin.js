@@ -1093,7 +1093,35 @@ async function ajanRename(req, res) {
   }
 }
 
+/* POST /ajan-code/new-pin {phone, code, by} - 4 Nov 2026 (Jennifer: "Banm posibilite poum jwenn pin tout agent ki aprouve yo").
+   A PIN is only ever stored hashed, so it cannot be read back: the console makes a NEW random one instead,
+   returned ONCE. Only for the account behind THIS Ajan code, only when the badge phone is that account's
+   phone, and only for a plain customer account the console made - never a merchant, driver or admin
+   (they have their own password, and the console must not be a way into a shop or an admin). */
+async function ajanNewPin(req, res) {
+  try {
+    if (!Koutye) return res.status(500).json({ error: 'agent models are not loaded' });
+    const b = req.body || {}, key = refPhoneKey(b.phone);
+    const k = await koutyeByCode(b.code);
+    if (!k || !k.user) return res.status(404).json({ error: 'no_code' });
+    if (!key || key.length < 8 || refPhoneKey(k.user.phone) !== key) return res.status(409).json({ error: 'not_this_phone' });
+    const user = await User.findById(k.user._id).select('+password role phone name');
+    if (!user) return res.status(404).json({ error: 'no_account' });
+    if (user.role !== 'customer') return res.status(409).json({ error: 'own_account', role: user.role });
+    const tempPin = String(crypto.randomInt(1000, 10000));
+    user.password = tempPin;
+    await user.save();
+    try { require('../services/activity').record(consoleActor(req), 'koutye.new_pin',
+      { targetType: 'User', targetId: user._id, targetLabel: k.koutyeCode + ' ' + String(b.by || 'console').slice(0, 60) }); } catch (e) {}
+    console.log('[AJAN PIN] new PIN made for ' + k.koutyeCode);
+    res.json({ success: true, tempPin, phone: user.phone, code: k.koutyeCode });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 router.get('/ajan-code', ajanLookup);
+router.post('/ajan-code/new-pin', ajanNewPin);
 router.post('/ajan-code', ajanCreate);
 router.post('/ajan-code/rename', ajanRename);
 router.post('/ajan-performance', ajanPerformance);
@@ -1101,6 +1129,6 @@ router.post('/ajan-performance', ajanPerformance);
 /* The same three, for haitibiznis-api's console server to server (mounted in
    server.js behind the shared INTERNAL_SERVICE_KEY), so Jennifer needs only the
    one console code she already has. */
-router.ajan = { lookup: ajanLookup, create: ajanCreate, performance: ajanPerformance, rename: ajanRename };
+router.ajan = { lookup: ajanLookup, create: ajanCreate, performance: ajanPerformance, rename: ajanRename, newPin: ajanNewPin };
 
 module.exports = router;
