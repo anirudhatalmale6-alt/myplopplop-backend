@@ -104,10 +104,21 @@ const storeSchema = new mongoose.Schema({
       welcomeBy: String,
       welcomeAt: Date,
       review: { state: String, by: String, at: Date, note: String },
+      /* 4 Nov 2026 (Jeffery, PATENTE): has = 'yes' | 'no' | '' (not answered, e.g. LajanMaker 88). fy = the
+         START year of the fiscal year printed on the certificate ("Exercice Fiscal 2025-2026" → 2025); a Patente
+         has no expiry date. state: none | pending (to check) | fix (correction asked) | verified (by Jennifer). */
+      patente: { has: String, number: String, fy: Number, state: String, note: String, by: String, at: Date },
+      /* "Mwen bezwen asistans": a formalization lead for Jennifer. state: new | contacted | done */
+      assist: { asked: Boolean, at: Date, state: String, note: String, by: String, doneAt: Date },
       history: [{ _id: false, at: { type: Date, default: Date.now }, by: String, action: String, note: String }]
     }, { _id: false }),
     select: false
   },
+  /* 4 Nov 2026 (Jeffery, PATENTE): the PUBLIC badge, written only by services/merchantVerify.syncTrust() after
+     Jennifer's decisions. level 'patente' = identity + Patente verified (fy = its fiscal year; shown 🟢 only
+     while that fiscal year is current), 'id' = identity verified, no verified Patente (🟡 - NEVER "registered").
+     Absent = no badge (not approved, or a store from before 4 Nov). */
+  trust: { level: { type: String, enum: ['patente', 'id'] }, fy: Number },
   isFeatured: { type: Boolean, default: false },
   // Who sent this merchant to us (SPAP, FTPH/COTRASMOTHA, Facebook, a friend...).
   // Set once at sign-up from the ?ref= on the partner's own link.

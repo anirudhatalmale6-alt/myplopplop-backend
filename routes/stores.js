@@ -33,7 +33,7 @@ router.get('/', async function(req, res) {
     }
 
     var stores = await Store.find(query)
-      .select('name slug category logo coverImage rating stats address deliveryOptions isFeatured isVerified status')
+      .select('name slug category logo coverImage rating stats address deliveryOptions isFeatured isVerified status trust')
       .sort({ isFeatured: -1, 'rating.average': -1 })
       .skip((page - 1) * limit)
       .limit(limit);
@@ -157,9 +157,18 @@ router.post('/', protect, [
     if (!agentCode && req.body.agentPhone) agentCode = await referralService.koutyeCodeForPhone(req.body.agentPhone);
     /* every new store: waiting for Jennifer, with where it came from (agentCode is filled in below only when
        the Ajan credit was really attached - a typed code that does not exist credits nobody) */
-    await Store.updateOne({ _id: store._id }, { $set: { verification: { state: 'pending', source: byAjan ? 'lajanmaker' : 'website',
+    var pat = patenteInput(req.body.patente);
+    var ver = { state: 'pending', source: byAjan ? 'lajanmaker' : 'website',
       agentPhone: byAjan ? String(req.body.agentPhone).slice(0, 32) : '', agentCode: '',
-      history: [{ at: new Date(), by: byAjan ? 'ajan' : 'merchant', action: 'registered', note: byAjan ? 'LajanMaker' : 'myplopplop.com' }] } } });
+      history: [{ at: new Date(), by: byAjan ? 'ajan' : 'merchant', action: 'registered', note: byAjan ? 'LajanMaker' : 'myplopplop.com' }] };
+    /* 4 Nov 2026 (PATENTE): "Èske biznis ou gen Patente?" - absent (LajanMaker 88) = not answered */
+    if (pat) { ver.patente = { has: pat.has, number: pat.number, fy: pat.fy, state: pat.has === 'yes' ? 'pending' : 'none', at: new Date() };
+      ver.history.push({ at: new Date(), by: byAjan ? 'ajan' : 'merchant', action: 'patente', note: pat.has === 'yes' ? 'Wi' + (pat.fy ? ' ' + pat.fy + '-' + (pat.fy + 1) : '') : 'Non' }); }
+    if (req.body.patenteAssist === true || req.body.patenteAssist === 'yes') {
+      ver.assist = { asked: true, at: new Date(), state: 'new' };
+      ver.history.push({ at: new Date(), by: byAjan ? 'ajan' : 'merchant', action: 'assist', note: 'Mwen bezwen asistans (Patente)' });
+    }
+    await Store.updateOne({ _id: store._id }, { $set: { verification: ver } });
     var refResult = await referralService.attachReferral({
       code: agentCode,
       platform: 'myplopplop',
@@ -205,6 +214,18 @@ router.post('/', protect, [
    merchant's own session right after registration (retried like the driver photos). Only while the store waits
    (pending / corrections asked). Stored privately in MerchantDocument - never on the store. */
 var VDOC = ['storefront', 'owner_id'];
+/* 4 Nov 2026 (PATENTE): the Patente / MSPP authorisation can also come LATER, from an approved store (🟡 → 🟢)
+   or a store from before 4 Nov - never from one Jennifer rejected */
+var LDOC = ['patente', 'mspp'];
+function patenteInput(p) {
+  if (!p || typeof p !== 'object') return null;
+  var has = p.has === 'yes' || p.has === true ? 'yes' : p.has === 'no' || p.has === false ? 'no' : '';
+  if (!has) return null;
+  var cur = merchantVerify.fiscalStart(), fy = parseInt(p.fy, 10);
+  if (!(fy >= cur - 15 && fy <= cur)) fy = undefined;
+  var number = String(p.number || '').replace(/[^0-9A-Za-z\-\/ ]/g, '').trim().slice(0, 30);
+  return { has: has, number: has === 'yes' ? number : '', fy: has === 'yes' ? fy : undefined };
+}
 router.post('/:id/verification-docs', protect, async function (req, res) {
   try {
     if (!/^[0-9a-fA-F]{24}$/.test(String(req.params.id))) return res.status(404).json({ success: false, message: 'Store not found' });
@@ -220,9 +241,9 @@ router.post('/:id/verification-docs', protect, async function (req, res) {
 });
 async function saveVerificationDoc(store, b, by) {
   var v = store.verification || {};
-  if (['pending', 'fix'].indexOf(v.state) < 0) return { code: 409, body: { success: false, error: 'not_waiting' } };
   var type = String(b.type || ''), m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(b.image_data || ''));
-  if (VDOC.indexOf(type) < 0) return { code: 400, body: { success: false, error: 'bad_type' } };
+  if (VDOC.indexOf(type) < 0 && LDOC.indexOf(type) < 0) return { code: 400, body: { success: false, error: 'bad_type' } };
+  if (VDOC.indexOf(type) >= 0 ? ['pending', 'fix'].indexOf(v.state) < 0 : v.state === 'rejected') return { code: 409, body: { success: false, error: 'not_waiting' } };
   if (!m) return { code: 400, body: { success: false, error: 'bad_image' } };
   if (m[2].length > 7 * 1024 * 1024) return { code: 413, body: { success: false, error: 'too_large' } };
   await MerchantDocument.findOneAndUpdate({ store: store._id, type: type },
@@ -230,7 +251,11 @@ async function saveVerificationDoc(store, b, by) {
   var fix = (v.fixDocs || []).filter(function (t) { return t !== type; });
   var set = { 'verification.fixDocs': fix };
   if (v.state === 'fix' && !fix.length) set['verification.state'] = 'pending';
+  /* a new Patente photo is checked again by Jennifer (a 🟢 goes back to 🟡 until she does) */
+  if (type === 'patente' && by.indexOf('console:') !== 0) { set['verification.patente.has'] = 'yes'; set['verification.patente.state'] = 'pending'; set['verification.patente.note'] = ''; }
+  if (type === 'patente' && by.indexOf('console:') === 0 && !(v.patente && v.patente.state)) { set['verification.patente.has'] = 'yes'; set['verification.patente.state'] = 'pending'; }
   await Store.updateOne({ _id: store._id }, { $set: set, $push: { 'verification.history': { at: new Date(), by: by, action: 'document', note: type } } });
+  if (type === 'patente') await merchantVerify.syncTrust(Store, store._id);
   return { code: 201, body: { success: true, type: type } };
 }
 router.saveVerificationDoc = saveVerificationDoc;
@@ -245,7 +270,54 @@ router.get('/my/verification', protect, async function (req, res) {
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, storeId: String(st._id), name: st.name, status: st.status, slug: st.status === 'active' ? st.slug : '',
       state: v.state || (st.status === 'active' ? 'approved' : st.status), fix: v.fixDocs || [], note: v.state === 'fix' ? (v.fixNote || '') : '',
-      reason: v.state === 'rejected' ? (v.reason || '') : '', docs: docs.map(function (d) { return d.type; }) });
+      reason: v.state === 'rejected' ? (v.reason || '') : '', docs: docs.map(function (d) { return d.type; }),
+      category: st.category, patente: patenteView(v.patente), assist: !!(v.assist && v.assist.asked), trust: st.trust || null,
+      licence: merchantVerify.LICENSED[st.category] || [], fiscalYears: merchantVerify.fiscalChoices() });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+function patenteView(p) {
+  p = p || {};
+  return { has: p.has || '', number: p.number || '', fy: p.fy || null, state: p.state || (p.has ? 'none' : ''),
+    note: p.state === 'fix' ? (p.note || '') : '', fresh: merchantVerify.patenteFreshness(p.fy) };
+}
+router.patenteView = patenteView;
+router.patenteInput = patenteInput;
+
+/* ─── 4 Nov 2026 (PATENTE): the merchant answers / updates "Èske biznis ou gen Patente?" himself - from the
+   registration page or later from his dashboard. Never "verified": only Jennifer does that. ─── */
+router.post('/my/patente', protect, async function (req, res) {
+  try {
+    var st = await Store.findOne({ owner: req.user._id }).select('+verification');
+    if (!st) return res.status(404).json({ success: false, error: 'no_store' });
+    var v = st.verification || {};
+    if (v.state === 'rejected') return res.status(409).json({ success: false, error: 'not_waiting' });
+    var pat = patenteInput(req.body);
+    if (!pat) return res.status(400).json({ success: false, error: 'has_required' });
+    var old = v.patente || {};
+    var same = old.has === pat.has && (old.number || '') === pat.number && (old.fy || null) === (pat.fy || null);
+    if (same) return res.json({ success: true, patente: patenteView(old) });
+    var np = { has: pat.has, number: pat.number, fy: pat.fy, state: pat.has === 'yes' ? 'pending' : 'none', note: '', at: new Date(), by: 'merchant' };
+    await Store.updateOne({ _id: st._id }, { $set: { 'verification.patente': np },
+      $push: { 'verification.history': { at: new Date(), by: 'merchant', action: 'patente', note: pat.has === 'yes' ? 'Wi' + (pat.number ? ' #' + pat.number : '') + (pat.fy ? ' ' + pat.fy + '-' + (pat.fy + 1) : '') : 'Non' } } });
+    await merchantVerify.syncTrust(Store, st._id);
+    res.json({ success: true, patente: patenteView(np) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+/* "📋 Ou poko gen Patente? ... Mwen bezwen asistans" - a lead for Jennifer (once; asking again keeps the first) */
+router.post('/my/patente-assist', protect, async function (req, res) {
+  try {
+    var st = await Store.findOne({ owner: req.user._id }).select('+verification');
+    if (!st) return res.status(404).json({ success: false, error: 'no_store' });
+    var a = (st.verification && st.verification.assist) || {};
+    if (a.asked && a.state !== 'done') return res.json({ success: true, already: true });
+    await Store.updateOne({ _id: st._id }, { $set: { 'verification.assist': { asked: true, at: new Date(), state: 'new' } },
+      $push: { 'verification.history': { at: new Date(), by: 'merchant', action: 'assist', note: 'Mwen bezwen asistans (Patente)' } } });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error' });
   }
@@ -257,14 +329,15 @@ router.post('/status-batch', async function (req, res) {
   try {
     var ids = ((req.body && req.body.ids) || []).map(String).filter(function (x) { return /^[0-9a-fA-F]{24}$/.test(x); }).slice(0, 100);
     if (!ids.length) return res.json({ stores: [] });
-    var rows = await Store.find({ _id: { $in: ids } }).select('+verification status slug').lean();
+    var rows = await Store.find({ _id: { $in: ids } }).select('+verification status slug trust').lean();
     var docs = await MerchantDocument.find({ store: { $in: ids } }).select('store type').lean();
     res.set('Cache-Control', 'no-store');
     res.json({ stores: rows.map(function (x) { var v = x.verification || {};
       return { id: String(x._id), state: v.state || (x.status === 'active' ? 'approved' : x.status), status: x.status,
         fix: v.fixDocs || [], note: v.state === 'fix' ? (v.fixNote || '') : '', reason: v.state === 'rejected' ? (v.reason || '') : '',
         docs: docs.filter(function (d) { return String(d.store) === String(x._id); }).map(function (d) { return d.type; }),
-        slug: x.status === 'active' ? x.slug : '' }; }) });
+        slug: x.status === 'active' ? x.slug : '', patente: v.patente ? { has: v.patente.has || '', state: v.patente.state || '' } : null,
+        trust: x.trust ? x.trust.level : '' }; }) });
   } catch (err) {
     res.status(500).json({ error: 'server_error' });
   }
@@ -284,6 +357,14 @@ router.put('/:id', protect, async function(req, res) {
     var allowed = ['name', 'description', 'category', 'phone', 'email', 'address', 'openingHours', 'deliveryOptions', 'logo', 'coverImage', 'status'];
     /* 4 Nov 2026: a store waiting for Jennifer cannot switch itself on (or anything else) - only her approval does */
     if (merchantVerify.waiting(store)) allowed = allowed.filter(function (f) { return f !== 'status'; });
+    /* 4 Nov 2026 (PATENTE): an open store cannot turn itself into a pharmacy without the Patente + MSPP
+       authorisation Jennifer checked (a waiting store may: her approval checks it) */
+    if (req.body.category !== undefined && req.body.category !== store.category && merchantVerify.LICENSED[req.body.category] && !merchantVerify.waiting(store)) {
+      var have = (await MerchantDocument.find({ store: store._id }).select('type').lean()).map(function (d) { return d.type; });
+      var miss = merchantVerify.licenceMissing(req.body.category, store.verification, have);
+      if (miss.length) return res.status(409).json({ success: false, error: 'licence_required', missing: miss,
+        message: 'A pharmacy needs a verified Patente and the MSPP authorisation first.' });
+    }
     allowed.forEach(function(field) {
       if (req.body[field] !== undefined) store[field] = req.body[field];
     });

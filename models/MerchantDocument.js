@@ -3,11 +3,12 @@
    only to authorized staff. They must never appear on public storefronts."
    Kept in their OWN collection, never referenced by the Store document, so no store/product route can
    return them by accident. Read only by routes/merchantVerification.js (internal key = Jennifer's console). */
+/* + 4 Nov (PATENTE): 'patente' = the Patente certificate, 'mspp' = the Ministry of Health authorisation (pharmacies) */
 const mongoose = require('mongoose');
 
 const merchantDocumentSchema = new mongoose.Schema({
   store: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', required: true },
-  type: { type: String, enum: ['storefront', 'owner_id'], required: true },
+  type: { type: String, enum: ['storefront', 'owner_id', 'patente', 'mspp'], required: true },
   mime: { type: String, default: 'image/jpeg' },
   data: { type: String, required: true },          // base64, no data: prefix
   size: Number,
