@@ -162,6 +162,10 @@ router.post('/', protect, [
    points - the same calculateFare and 80/20 split as every delivery. */
 router.post('/parcel', protect, async (req, res) => {
   try {
+    /* 5 Nov 2026, Jeffery: "If anything fails, stop new Koli assignments until the issue is resolved." Render env
+       KOLI_PAUSED=1 = no NEW package is accepted (packages already paid finish normally). Off = unset. */
+    if (process.env.KOLI_PAUSED === '1') return res.status(503).json({ success: false, code: 'koli_paused',
+      message: 'Voye yon koli poze pou kounye a. Eseye ankò pita. / Package sending is paused for now. Please try again later.' });
     const P = require('../services/parcel');
     const b = req.body || {};
     const pk = b.pickup || {}, dp = b.dropoff || {}, rc = b.recipient || {};
