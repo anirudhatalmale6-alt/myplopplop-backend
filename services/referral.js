@@ -44,7 +44,7 @@ const COMMISSION_RATES = {
   'utility':      { rate: 0,    type: 'per_transaction', label: 'Not active yet' },
   'sol':          { rate: 0,    type: 'per_activity', label: 'Not active yet' },
   'prolakay':     { rate: 0,    type: 'percentage', label: 'Not active yet' },
-  'tikelakay':    { rate: 0.03, type: 'percentage', label: '3% of the ticket price' }
+  'tikelakay':    { rate: 0.015, type: 'percentage', label: '1.5% of the ticket price' }
 };
 
 // Agents write their code on paper, on a wall, into a phone with a cracked
@@ -252,7 +252,9 @@ const PLATFORM_FEES = {
      3% of the price out of a 7.5% fee is 40% OF THE FEE: 0.075 * 0.40 = 0.03.
      ⛔ `amount` MUST be the TICKET PRICE (subtotal), not the 1,075 the buyer
      pays - billing the buyer's total would pay the agent 32.25 instead of 30. */
-  'tikelakay':    { feeRate: 0.075, koutyeRate: 0.40, label: '3% of the ticket price (40% of the 7.5% fee)' }
+  /* 5 Nov 2026, Jeffery: "You also have my approval to deploy the 1.5% LajanMaker commission, funded entirely from our
+     existing 7.5% buyer-paid platform fee." 1.5% of the ticket price = 20% of the 7.5% fee (was 40% = 3%). */
+  'tikelakay':    { feeRate: 0.075, koutyeRate: 0.20, label: '1.5% of the ticket price (20% of the 7.5% fee)' }
 };
 
 /* Pay the agent who introduced THIS person, for something that person just did.
