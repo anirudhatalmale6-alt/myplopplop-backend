@@ -175,7 +175,8 @@ router.post('/parcel', protect, async (req, res) => {
     const rname = String(rc.name || '').trim().slice(0, 80);
     const rphone = String(rc.phone || '').replace(/\D/g, '');
     if (!rname) return say('Mete non moun k ap resevwa koli a.');
-    if (rphone.length < 8) return say('Mete nimewo telefòn moun k ap resevwa koli a.');
+    /* 5 Nov 2026: a Haiti number - 8 digits, or 509 + 8 (a 9- or 10-digit "number" can reach nobody) */
+    if (!(rphone.length === 8 || (rphone.length === 11 && rphone.indexOf('509') === 0))) return say('Mete nimewo telefòn moun k ap resevwa koli a (8 chif).');
     const photo = String(b.photo || '');
     if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(photo)) return say('Pran yon foto koli a.');
     if (photo.length > 550 * 1024) return say('Foto a twò gwo. Eseye ankò.');
