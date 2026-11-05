@@ -46,6 +46,24 @@ const rideSchema = new mongoose.Schema({
   // an admin sets the pay (POST /api/admin-ops/rides/:id/driver-pay).
   needsDriverPay: { type: Boolean, default: false },
 
+  /* 27 Oct 2026 - "VOYE YON KOLI": one person sends a package to another,
+     nothing bought from a shop. Jeffery: "No driver assigned until payment is
+     confirmed." So a parcel is born 'awaiting_payment' - a status the
+     dispatcher, /available and accept never look at - and only becomes
+     'requested' through services/parcel.js confirmPaid, after the gateway
+     itself says the money arrived. */
+  source: { type: String, enum: ['parcel'] },
+  parcel: {
+    photo: String,          // small JPEG data URL, shrunk on the phone (≤ 400 KB)
+    description: String
+  },
+  /* The recipient's public tracking link carries this, never the ride id: it
+     must not let anybody walk the ids and read other people's deliveries. */
+  trackToken: { type: String, index: true, sparse: true },
+  paidAt: Date,
+  pinAttempts: { type: Number, default: 0 },
+  driverCreditedAt: Date,
+
   // For diaspora orders - the person receiving in Haiti
   recipient: {
     name: String,
@@ -103,6 +121,7 @@ const rideSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: [
+      'awaiting_payment', // A parcel created but not paid yet: invisible to drivers
       'requested',      // Customer placed order
       'accepted',       // Driver accepted
       'picking_up',     // Driver heading to pickup
@@ -117,6 +136,28 @@ const rideSchema = new mongoose.Schema({
     enum: ['customer', 'driver', 'admin']
   },
   cancelReason: String,
+  /* 5 Nov 2026 (Jeffery: "a reliable refund process if no driver accepts"): a PAID parcel that is
+     cancelled - nobody took it, the sender cancelled before pickup, or it was paid after the sender
+     cancelled - is recorded here as OWED and paid back by a person (no automatic refunds), who then
+     marks it refunded with the MonCash/NatCash/Stripe reference. */
+  refund: {
+    status: { type: String, enum: ['owed', 'refunded'] },
+    amount: Number,
+    reason: { type: String, enum: ['no_driver', 'sender_cancelled', 'paid_after_cancel'] },
+    owedAt: Date,
+    refundedAt: Date,
+    by: String,
+    reference: String,
+    note: String
+  },
+
+  /* 5 Nov 2026: the one-job lock this job holds on MsouWout (services/driverLock.js). held=true from the
+     accept until MsouWout confirms the release; the 10 s dispatch tick re-sends releases that failed. */
+  driverLock: {
+    msouwoutId: String,
+    held: { type: Boolean, default: undefined, index: true },
+    at: Date
+  },
 
   // Timestamps for each status
   acceptedAt: Date,

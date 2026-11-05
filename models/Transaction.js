@@ -49,7 +49,9 @@ const transactionSchema = new mongoose.Schema({
      atomically, and moves the money between wallet buckets. */
   releaseAt: Date,
   earningOf: { type: String, enum: ['merchant', 'driver'] },
-  order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' }
+  order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+  // A card payment: the Stripe Checkout Session it was paid through.
+  stripeSessionId: { type: String, index: true, sparse: true }
 }, {
   timestamps: true
 });

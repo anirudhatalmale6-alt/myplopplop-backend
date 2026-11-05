@@ -63,31 +63,35 @@ async function lockedDrivers(storeId) {
 
 // Find the nearest online, approved delivery driver not already tried.
 // `only`: a locked shop - nobody outside this list, at any distance.
+/* 5 Nov 2026: and not BUSY - a driver on a MyPlopPlop job or a MsouWout passenger ride is skipped
+   (services/driverBusy.js). The nearest few are looked at, the first free one gets the offer. */
 async function findNearestDriver(pickupLngLat, excludeUserIds, only) {
-  if (only) {
-    const ex = (excludeUserIds || []).map(String);
-    return DriverProfile.findOne({
-      status: 'approved',
-      isOnline: true,
-      services: 'delivery',
-      user: { $in: only.filter(function (u) { return ex.indexOf(u) === -1; }) },
-      locationUpdatedAt: { $gte: new Date(Date.now() - LOCATION_FRESH_MS) }
-    }).populate('user', 'name phone');
-  }
-  const profile = await DriverProfile.findOne({
+  const base = {
     status: 'approved',
     isOnline: true,
     services: 'delivery',
-    user: { $nin: excludeUserIds || [] },
-    locationUpdatedAt: { $gte: new Date(Date.now() - LOCATION_FRESH_MS) },
-    currentLocation: {
-      $near: {
-        $geometry: { type: 'Point', coordinates: pickupLngLat },
-        $maxDistance: SEARCH_RADIUS_M
+    locationUpdatedAt: { $gte: new Date(Date.now() - LOCATION_FRESH_MS) }
+  };
+  let candidates;
+  if (only) {
+    const ex = (excludeUserIds || []).map(String);
+    candidates = await DriverProfile.find(Object.assign({}, base, {
+      user: { $in: only.filter(function (u) { return ex.indexOf(u) === -1; }) }
+    })).limit(10).populate('user', 'name phone');
+  } else {
+    candidates = await DriverProfile.find(Object.assign({}, base, {
+      user: { $nin: excludeUserIds || [] },
+      currentLocation: {
+        $near: {
+          $geometry: { type: 'Point', coordinates: pickupLngLat },
+          $maxDistance: SEARCH_RADIUS_M
+        }
       }
-    }
-  }).populate('user', 'name phone');
-  return profile;
+    })).limit(10).populate('user', 'name phone');
+  }
+  if (!candidates.length) return null;
+  const busy = await require('./driverBusy').busyUsers(candidates);
+  return candidates.find(function (p) { return p.user && !busy.has(String(p.user._id)); }) || null;
 }
 
 // Offer a ride to the next closest driver. Returns true if an offer was sent.

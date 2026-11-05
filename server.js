@@ -94,6 +94,7 @@ ajanInternal.post('/ajan-code/new-pin', adminPinRoutes.ajan.newPin);
 /* 4 Nov 2026: Jennifer's merchant verification (console code checked on haitibiznis-api) */
 ajanInternal.use('/merchants', require('./routes/merchantVerification'));
 ajanInternal.post('/ajan-performance', adminPinRoutes.ajan.performance);
+ajanInternal.use(require('./routes/internalJobs'));   // 5 Nov 2026: driver-busy (MsouWout asks) + parcel refunds (Jennifer's console)
 app.use('/api/internal', ajanInternal);
 /* Partner organizations: the dashboard built in June, finally given its data. */
 app.use('/api/organizations', require('./routes/organizations'));
@@ -285,6 +286,8 @@ connectDB().then(() => {
     const deliveryDispatch = require('./services/deliveryDispatch');
     setInterval(() => {
       deliveryDispatch.dispatchTick(io).catch((e) => console.error('dispatchTick error:', e.message));
+      /* 5 Nov 2026: one-job locks on MsouWout - re-send releases that failed, lock jobs running without one */
+      require('./services/driverLock').reconcile().catch((e) => console.error('lock reconcile error:', e.message));
     }, 10000);
     console.log('Delivery dispatch engine started (10s tick)');
   } catch (e) {
@@ -305,6 +308,15 @@ connectDB().then(() => {
       lifecycle.releaseMatured().then((r) => { if (r.shops || r.drivers) console.log('[RELEASE]', JSON.stringify(r)); })
         .catch((e) => console.error('release error:', e.message));
     }, 10 * 60 * 1000);
+    /* 27 Oct 2026: unpaid "Voye yon koli" parcels - the server asks the
+       gateway itself, so a sender who paid and lost the connection is still
+       dispatched; a parcel unpaid for a day is closed. Read-only on the
+       gateways, idempotent. */
+    const parcel = require('./services/parcel');
+    setInterval(() => {
+      parcel.tick(io).then((r) => { if (r.confirmed || r.expired || r.paidAfterCancel) console.log('[PARCEL POLLER]', JSON.stringify(r)); })
+        .catch((e) => console.error('parcel poller error:', e.message));
+    }, 60 * 1000);
     console.log('Payment poller (60s) and earnings release (10 min) started');
   } catch (e) {
     console.error('Failed to start payment poller / release:', e.message);

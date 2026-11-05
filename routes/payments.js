@@ -14,16 +14,19 @@ function generateOrderId(prefix) {
   return prefix + '_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
 }
 
-async function createSolutionIPPayment(referenceId, amount, paymentMethod) {
+async function createSolutionIPPayment(referenceId, amount, paymentMethod, returnUrl) {
+  const body = {
+    client_id: SOLUTIONIP_CLIENT_ID,
+    refference_id: referenceId,
+    montant: amount,
+    payment_method: paymentMethod || 'all'
+  };
+  // Where the payer lands afterwards (Tikè Lakay passes the same field).
+  if (returnUrl) body.return_url = returnUrl;
   const response = await fetch(`${SOLUTIONIP_URL}/api/paiement-marchand`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: SOLUTIONIP_CLIENT_ID,
-      refference_id: referenceId,
-      montant: amount,
-      payment_method: paymentMethod || 'all'
-    })
+    body: JSON.stringify(body)
   });
   return response.json();
 }
@@ -235,10 +238,16 @@ router.get('/moncash/verify', async (req, res) => {
           $inc: { 'wallet.balance': transaction.amount }
         });
       } else if (transaction.type === 'payment' && transaction.ride) {
-        await Ride.findByIdAndUpdate(transaction.ride, {
-          paymentStatus: 'paid',
-          paymentMethod: sipResult.method || 'moncash'
-        });
+        const r = await Ride.findById(transaction.ride);
+        if (r && r.source === 'parcel') {
+          // a parcel is dispatched by paying, through the one confirmation path
+          await require('../services/parcel').confirmPaid(r, null, 'moncash_verify', req.app.get('io'));
+        } else {
+          await Ride.findByIdAndUpdate(transaction.ride, {
+            paymentStatus: 'paid',
+            paymentMethod: sipResult.method || 'moncash'
+          });
+        }
       }
 
       return res.json({
@@ -436,6 +445,82 @@ router.post('/wallet/ride', protect, async (req, res) => {
   } catch (error) {
     console.error('Wallet payment error:', error);
     res.status(500).json({ success: false, message: 'Payment failed' });
+  }
+});
+
+/* ═══ VOYE YON KOLI: PAY FIRST (27 Oct 2026) ══════════════════════════════
+   "Payment before dispatch: MonCash, NatCash, or credit card. No driver
+   assigned until payment is confirmed." MonCash/NatCash = SolutionIP, cards =
+   Stripe, never crossed (his rule of 4 Oct). Nothing here marks anything
+   paid: services/parcel.js asks the gateway and confirms. */
+const CARD_MIN_HTG = Number(process.env.CARD_MIN_HTG || 75);   // Stripe's floor, measured 9 Oct
+const KOLI_PAGE = 'https://myplopplop.com/voye-koli.html';
+
+// GET /api/payments/parcel/methods - which ways to pay are switched on
+router.get('/parcel/methods', (req, res) => {
+  res.json({ success: true, moncash: true, natcash: true, card: require('../utils/stripe').configured() });
+});
+
+// POST /api/payments/parcel/start  { rideId, method: 'moncash'|'natcash'|'card' }
+router.post('/parcel/start', protect, async (req, res) => {
+  try {
+    const { rideId, method } = req.body || {};
+    const ride = await Ride.findById(rideId);
+    if (!ride || ride.source !== 'parcel' || String(ride.customer) !== String(req.user._id)) {
+      return res.status(404).json({ success: false, message: 'Koli sa a pa egziste.' });
+    }
+    if (ride.status !== 'awaiting_payment' || ride.paymentStatus === 'paid') {
+      return res.status(409).json({ success: false, code: 'not_payable', message: 'Koli sa a deja peye oswa anile.' });
+    }
+    if (['moncash', 'natcash', 'card'].indexOf(method) === -1) {
+      return res.status(400).json({ success: false, message: 'Chwazi MonCash, NatCash oswa kat.' });
+    }
+    const amount = ride.fare.total;
+    const back = KOLI_PAGE + '?ride=' + ride._id;
+    const ref = generateOrderId(method === 'card' ? 'koli_card' : 'koli');
+
+    if (method === 'card') {
+      const stripe = require('../utils/stripe');
+      if (!stripe.configured()) return res.status(503).json({ success: false, message: 'Kat pa disponib kounye a. Chwazi MonCash oswa NatCash.' });
+      if (amount < CARD_MIN_HTG) return res.status(400).json({ success: false, message: 'Pou yon kat, minimòm nan se ' + CARD_MIN_HTG + ' HTG. Chwazi MonCash oswa NatCash.' });
+      const s = await stripe.createCheckout({ amount, currency: 'HTG', label: 'MyPlopPlop — Livrezon koli', reference: ref,
+        successUrl: back + '&paid=1', cancelUrl: back, metadata: { ride: String(ride._id), kind: 'parcel' } });
+      if (!s.ok) return res.status(502).json({ success: false, message: 'Peman kat la pa t ka kòmanse. Eseye ankò oswa chwazi MonCash.' });
+      await Transaction.create({ user: req.user._id, ride: ride._id, type: 'payment', amount, method: 'card', status: 'pending',
+        reference: ref, stripeSessionId: s.id, description: 'Parcel delivery by card' });
+      await Ride.updateOne({ _id: ride._id }, { $set: { paymentMethod: 'card' } });
+      return res.json({ success: true, paymentUrl: s.url, reference: ref });
+    }
+
+    const sip = await createSolutionIPPayment(ref, amount, method, back);
+    if (!sip || sip.status !== true || !sip.url) {
+      return res.status(502).json({ success: false, message: (sip && sip.message) || 'Peman an pa t ka kòmanse. Eseye ankò.' });
+    }
+    await Transaction.create({ user: req.user._id, ride: ride._id, type: 'payment', amount, method, status: 'pending',
+      reference: ref, description: 'Parcel delivery via ' + method });
+    await Ride.updateOne({ _id: ride._id }, { $set: { paymentMethod: method } });
+    res.json({ success: true, paymentUrl: sip.url, reference: ref });
+  } catch (error) {
+    console.error('Parcel payment start error:', error);
+    res.status(500).json({ success: false, message: 'Peman an pa t ka kòmanse.' });
+  }
+});
+
+/* GET /api/payments/parcel/:rideId/check - the sender's page asks after
+   coming back from the gateway (and every few seconds while it waits). The
+   server asks the gateway; the page never says "paid" itself. */
+router.get('/parcel/:rideId/check', protect, async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.rideId).populate('driver', 'name phone');
+    if (!ride || ride.source !== 'parcel' || String(ride.customer) !== String(req.user._id)) {
+      return res.status(404).json({ success: false, message: 'Koli sa a pa egziste.' });
+    }
+    const r = ride.status === 'awaiting_payment' ? await require('../services/parcel').checkPending(ride, req.app.get('io'), { source: 'sender_page' }) : { paid: ride.paymentStatus === 'paid', ride };
+    const fresh = await Ride.findById(ride._id).select('-parcel.photo').populate('driver', 'name phone');
+    const o = fresh.toObject(); delete o.pickupCode;
+    res.json({ success: true, paid: fresh.paymentStatus === 'paid', ride: o });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 

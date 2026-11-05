@@ -5,12 +5,12 @@
    an administrator's screen fetches them through here when it opens them. */
 const BASE = process.env.MSOUWOUT_API_URL || 'https://msouwout-backend.onrender.com';
 
-async function ask(method, path, body) {
+async function ask(method, path, body, waitMs) {
   const key = process.env.INTERNAL_SERVICE_KEY;
   if (!key) return { status: 503, data: { error: 'link_not_configured' } };
   /* MsouWout sleeps on Render's free plan; waking it can take most of a minute */
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 55000);
+  const t = setTimeout(() => ctl.abort(), waitMs || 55000);
   try {
     const r = await fetch(BASE + path, {
       method, signal: ctl.signal,
@@ -26,6 +26,13 @@ async function ask(method, path, body) {
 
 const verify = (phone, pin) => ask('POST', '/api/drivers/internal/link-verify', { phone, pin });
 const status = (id) => ask('GET', '/api/drivers/internal/' + encodeURIComponent(id) + '/status');
+/* 5 Nov 2026 (Jeffery: "A driver should only receive new requests when available"): which of these
+   MsouWout drivers are on a passenger ride right now. Short wait - dispatch must not hang on a
+   sleeping MsouWout; the caller treats "no answer" as "not busy" (a ride lock on MsouWout still holds). */
+const busy = (ids) => ask('POST', '/api/rides/internal/busy', { driver_ids: ids }, 6000);
+/* the one-job lock MsouWout holds (its services/jobLock.js); job ids are "mpp:<ride id>" */
+const lock = (id, job) => ask('POST', '/api/rides/internal/lock', { driver_id: id, job_id: job }, 8000);
+const unlock = (id, job) => ask('POST', '/api/rides/internal/unlock', { driver_id: id, job_id: job }, 8000);
 const document = (id, type) => ask('GET', '/api/drivers/internal/' + encodeURIComponent(id) + '/document/' + encodeURIComponent(type));
 
 /* "Jean Baptiste" vs "JEAN  BAPTISTE Junior": the shorter name's words all
@@ -43,4 +50,4 @@ function sameName(a, b) {
 }
 const VEHICLE = { motorcycle: 'moto', moto: 'moto', car: 'car', truck: 'truck', van: 'truck' };
 
-module.exports = { verify, status, document, sameName, VEHICLE, BASE };
+module.exports = { verify, status, busy, lock, unlock, document, sameName, VEHICLE, BASE };
