@@ -250,6 +250,42 @@ router.post('/ticket-sale', async (req, res) => {
   }
 });
 
+/* 5 Nov 2026: LajanMaker Academy training paid on HaitiBiznis → 30% to the Ajan whose code came with it (same lock) */
+router.post('/course-sale', async (req, res) => {
+  const expected = process.env.INTERNAL_SERVICE_KEY;
+  if (!expected) {
+    console.warn('[TIKELAKAY] refused: INTERNAL_SERVICE_KEY is not configured');
+    return res.status(503).json({ success: false, message: 'Service link not configured' });
+  }
+  const given = req.get('x-internal-key') || '';
+  /* Compared in constant time so the key cannot be guessed a character at a
+     time by measuring how long the answer takes. */
+  const crypto = require('crypto');
+  const a = Buffer.from(String(given));
+  const b = Buffer.from(String(expected));
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  try {
+    const { koutyeCode, phone, name, email, amount, transactionId, description } = req.body || {};
+    const out = await referralService.commissionForTicketSale({
+      koutyeCode, phone, name, email,
+      amount: amount,
+      transactionId: transactionId,
+      serviceType: 'training', platform: 'lajanmaker',
+      description: description || 'LajanMaker training'
+    });
+    /* Always 200. The caller is a ticket that has already been paid for; it
+       must log what happened and carry on, never retry in a loop or fail the
+       buyer's confirmation because an agent code was mistyped. */
+    res.json({ success: true, result: out });
+  } catch (err) {
+    console.error('[LAJANMAKER] course-sale failed:', err.message);
+    res.json({ success: true, result: { commissioned: false, reason: 'error' } });
+  }
+});
+
 /* ═══ OTHER SERVICES -> "THIS PERSON WAS RECRUITED BY THIS AGENT" ═══════════
    15 Oct 2026. MsouWout keeps its drivers in its own database, so until now a
    driver recruited by an Ajan was recorded nowhere the agent engine could see:

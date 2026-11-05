@@ -13,7 +13,7 @@ const koutyeCommissionSchema = new mongoose.Schema({
   },
   platform: {
     type: String,
-    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay', 'tikelakay'],
+    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay', 'tikelakay', 'lajanmaker'],
     required: true
   },
   transactionId: {
@@ -29,7 +29,7 @@ const koutyeCommissionSchema = new mongoose.Schema({
        since 3 Oct, and without it here EVERY paid Tike Lakay ticket's
        commission failed validation and was silently not written. Found by
        testing the door itself rather than the function behind it. */
-    enum: ['package', 'ride', 'delivery', 'marketplace', 'utility', 'sol', 'talent', 'ticket'],
+    enum: ['package', 'ride', 'delivery', 'marketplace', 'utility', 'sol', 'talent', 'ticket', 'training'],
     default: 'package'
   },
   sourceAmount: {

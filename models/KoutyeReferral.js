@@ -12,7 +12,7 @@ const koutyeReferralSchema = new mongoose.Schema({
   },
   platform: {
     type: String,
-    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay', 'tikelakay'],
+    enum: ['48hoursready', 'msouwout', 'myplopplop', 'utility', 'sol', 'prolakay', 'tikelakay', 'lajanmaker'],
     required: true
   },
   referredEntity: {

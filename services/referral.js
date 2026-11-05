@@ -44,7 +44,9 @@ const COMMISSION_RATES = {
   'utility':      { rate: 0,    type: 'per_transaction', label: 'Not active yet' },
   'sol':          { rate: 0,    type: 'per_activity', label: 'Not active yet' },
   'prolakay':     { rate: 0,    type: 'percentage', label: 'Not active yet' },
-  'tikelakay':    { rate: 0.015, type: 'percentage', label: '1.5% of the ticket price' }
+  'tikelakay':    { rate: 0.015, type: 'percentage', label: '1.5% of the ticket price' },
+  /* 5 Nov 2026, Jeffery: "Please make sure the referral percentage for training is 30% for LajanMaker Agents" */
+  'lajanmaker':   { rate: 0.30, type: 'percentage', label: '30% of the training price' }
 };
 
 // Agents write their code on paper, on a wall, into a phone with a cracked
@@ -254,7 +256,9 @@ const PLATFORM_FEES = {
      pays - billing the buyer's total would pay the agent 32.25 instead of 30. */
   /* 5 Nov 2026, Jeffery: "You also have my approval to deploy the 1.5% LajanMaker commission, funded entirely from our
      existing 7.5% buyer-paid platform fee." 1.5% of the ticket price = 20% of the 7.5% fee (was 40% = 3%). */
-  'tikelakay':    { feeRate: 0.075, koutyeRate: 0.20, label: '1.5% of the ticket price (20% of the 7.5% fee)' }
+  'tikelakay':    { feeRate: 0.075, koutyeRate: 0.20, label: '1.5% of the ticket price (20% of the 7.5% fee)' },
+  /* LajanMaker Academy trainings (HaitiBiznis courses): 30% of what the student paid, to the Ajan whose code came with it */
+  'lajanmaker':   { feeRate: 1.00, koutyeRate: 0.30, label: '30% of the training price' }
 };
 
 /* Pay the agent who introduced THIS person, for something that person just did.
@@ -387,7 +391,8 @@ async function payOnReferral(referral, platform, amount, o) {
    fee is added on top of the price, and the agent's 3% comes out of that fee.  */
 async function commissionForTicketSale(opts) {
   const o = opts || {};
-  const platform = 'tikelakay';
+  /* 5 Nov 2026: also LajanMaker trainings (platform 'lajanmaker', 30%) - same rules, same once-only reference */
+  const platform = o.platform === 'lajanmaker' ? 'lajanmaker' : 'tikelakay';
   const amount = Number(o.amount);
   const pk = phoneKey(o.phone);
 
@@ -402,7 +407,7 @@ async function commissionForTicketSale(opts) {
       attached = await attachReferral({
         code: o.koutyeCode, platform: platform, entityType: 'customer',
         name: o.name, phone: o.phone, email: o.email,
-        source: o.description || 'Tike Lakay ticket'
+        source: o.description || (platform === 'lajanmaker' ? 'LajanMaker training' : 'Tike Lakay ticket')
       });
       if (attached.attached) referral = attached.referral;
       else if (attached.referral) referral = await liveOrExpire(attached.referral);
