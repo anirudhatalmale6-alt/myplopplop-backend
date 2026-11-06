@@ -4,7 +4,8 @@
    2. GET  /parcel-refunds?status=       Jennifer's console (through haitibiznis-api): paid parcels to pay back.
    3. POST /parcel-refunds/:id/refunded  she paid it back: who, and the MonCash/NatCash/Stripe reference.
    4. GET  /driver-earnings?msouwout_id= MsouWout's Revni tab: his delivery + parcel earnings (read-only).
-   5. POST /commission-status            Jennifer's console: payout status of the Ajan commission on given tickets. */
+   5. POST /commission-status            Jennifer's console: payout status of the Ajan commission on given tickets.
+   6. GET  /parcels-waiting              Jennifer's console: paid parcels still without a driver (red after 15 min). */
 const express = require('express');
 const Ride = require('../models/Ride');
 const DriverProfile = require('../models/DriverProfile');
@@ -109,6 +110,47 @@ router.post('/parcel-refunds/:id/refunded', async (req, res) => {
     } catch (e) { /* the log is not the refund */ }
     try { await require('./notifications').sendPushToUser(done.customer._id, 'Ranbousman fèt', 'Nou remèt ou ' + done.refund.amount + ' HTG pou koli a. Ref: ' + reference, {}); } catch (e) {}
     res.json({ ok: true, refund: view(done.toObject()) });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+
+/* 6. GET /parcels-waiting  6 Nov 2026 (Koli option A): Jennifer's red alert. Paid parcels still without a driver, oldest
+   first: minutes waiting, minutes before the automatic refund (30), whether the wider search is on, the sender, and
+   the nearest eligible drivers she can CALL (approved, delivery, position in Haiti, within the wide radius; online or
+   not, busy or not - shown, so she knows who to ask). Read-only. */
+router.get('/parcels-waiting', async (req, res) => {
+  try {
+    const P = require('../services/parcel'), DD = require('../services/deliveryDispatch'), OA = require('../services/operatingAreas');
+    const now = Date.now(), areas = await OA.get();
+    const rides = await Ride.find({ source: 'parcel', status: 'requested', paymentStatus: 'paid', driver: null })
+      .sort({ searchingSince: 1 }).limit(30).populate('customer', 'name phone').lean();
+    const out = [];
+    for (const r of rides) {
+      const since = r.searchingSince || r.paidAt || r.createdAt, min = Math.floor((now - new Date(since)) / 60000);
+      let near = [], pickupArea = '';
+      const pc = r.pickup && r.pickup.coordinates && r.pickup.coordinates.coordinates;
+      if (pc && pc.length === 2) pickupArea = OA.areaName(areas, pc[0], pc[1]);
+      if (pc && pc.length === 2) {
+        const ps = await DriverProfile.find({ status: 'approved', services: 'delivery', currentLocation: { $near: { $geometry: { type: 'Point', coordinates: pc }, $maxDistance: DD.WIDE_RADIUS_M } } })
+          .limit(8).populate('user', 'name phone').lean();
+        const busy = await require('../services/driverBusy').busyUsers(ps.filter(function (p) { return p.user; })).catch(function () { return new Set(); });
+        /* only drivers the wider search may use: within the normal 15 km, or (pickup AND driver in an approved area) */
+        near = ps.filter(function (p) {
+          if (!p.user || !DD.inHaitiLngLat(p.currentLocation)) return false;
+          const c = p.currentLocation.coordinates;
+          return P.haversineKm(c[1], c[0], pc[1], pc[0]) <= DD.SEARCH_RADIUS_M / 1000 || (pickupArea && OA.inArea(areas, c[0], c[1]));
+        }).slice(0, 5).map(function (p) {
+          const c = p.currentLocation.coordinates;
+          return { name: p.user.name || '', phone: p.user.phone || '', km: Math.round(P.haversineKm(c[1], c[0], pc[1], pc[0]) * 10) / 10,
+            online: !!p.isOnline && !!p.locationUpdatedAt && (now - new Date(p.locationUpdatedAt)) < DD.LOCATION_FRESH_MS, busy: busy.has(String(p.user._id)) };
+        });
+      }
+      const c = r.customer || {};
+      out.push({ id: String(r._id), short: String(r._id).slice(-6).toUpperCase(), minutes: min, refundIn: Math.max(0, P.NO_DRIVER_REFUND_MIN - min),
+        alert: min >= P.WIDE_AFTER_MIN, wide: !!r.wideSearchAt, pickupArea: pickupArea, amount: r.fare && r.fare.total, sender: { name: c.name || '', phone: c.phone || '' },
+        pickup: r.pickup && r.pickup.address, dropoff: r.dropoff && r.dropoff.address, offeredNow: !!r.offeredTo, drivers: near });
+    }
+    res.json({ alertAfter: P.WIDE_AFTER_MIN, refundAfter: P.NO_DRIVER_REFUND_MIN, wideKm: DD.WIDE_RADIUS_M / 1000, normalKm: DD.SEARCH_RADIUS_M / 1000, areasKnown: areas.length,
+      waiting: out, alerts: out.filter(function (x) { return x.alert; }).length });
   } catch (e) { res.status(500).json({ error: 'server' }); }
 });
 

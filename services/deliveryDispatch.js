@@ -15,6 +15,15 @@ const { sendPushToUser } = require('../routes/notifications');
 
 const OFFER_WINDOW_MS = 30 * 1000; // 30 seconds to accept
 const SEARCH_RADIUS_M = 15000;     // 15 km search radius for a driver
+/* 6 Nov 2026, Jeffery (Koli option A): a paid PARCEL nobody took in 15 minutes is searched wider - but "only drivers
+   within our approved service area and safe operating limits": approved + online + delivery + fresh position (same
+   as always), position inside Haiti, not busy, not held (OAVCT / test account, services/driverBusy.js), and never
+   farther than PARCEL_WIDE_RADIUS_KM (default 30 km, hard cap 40 km) from the pickup. */
+const WIDE_RADIUS_M = Math.min(Number(process.env.PARCEL_WIDE_RADIUS_KM) || 30, 40) * 1000;
+function inHaitiLngLat(c) {
+  const g = c && c.coordinates, x = g && g[0], y = g && g[1];
+  return isFinite(x) && isFinite(y) && y > 17.9 && y < 20.2 && x > -74.6 && x < -71.5;
+}
 /* 16 Oct 2026: a driver whose app has not reported a position for this long
    is treated as gone (closed the app, no signal) and is not offered jobs. */
 const LOCATION_FRESH_MS = 15 * 60 * 1000;
@@ -65,7 +74,7 @@ async function lockedDrivers(storeId) {
 // `only`: a locked shop - nobody outside this list, at any distance.
 /* 5 Nov 2026: and not BUSY - a driver on a MyPlopPlop job or a MsouWout passenger ride is skipped
    (services/driverBusy.js). The nearest few are looked at, the first free one gets the offer. */
-async function findNearestDriver(pickupLngLat, excludeUserIds, only) {
+async function findNearestDriver(pickupLngLat, excludeUserIds, only, radiusM) {
   const base = {
     status: 'approved',
     isOnline: true,
@@ -84,10 +93,22 @@ async function findNearestDriver(pickupLngLat, excludeUserIds, only) {
       currentLocation: {
         $near: {
           $geometry: { type: 'Point', coordinates: pickupLngLat },
-          $maxDistance: SEARCH_RADIUS_M
+          $maxDistance: radiusM || SEARCH_RADIUS_M
         }
       }
     })).limit(10).populate('user', 'name phone');
+  }
+  /* 6 Nov 2026 (Koli option A, Jeffery 03:24): beyond the normal 15 km, a driver qualifies ONLY if he and the pickup are
+     both inside an approved operating area (MsouWout green zones, open now). Within 15 km: exactly as before. */
+  if (radiusM && radiusM > SEARCH_RADIUS_M && candidates.length) {
+    const OA = require('./operatingAreas'); const areas = await OA.get(); const now = new Date();
+    const pickupOk = OA.inArea(areas, pickupLngLat[0], pickupLngLat[1], now);
+    candidates = candidates.filter(function (p) {
+      const c = p.currentLocation && p.currentLocation.coordinates;
+      if (!c) return false;
+      if (haversineKm(c[1], c[0], pickupLngLat[1], pickupLngLat[0]) <= SEARCH_RADIUS_M / 1000) return true;
+      return pickupOk && inHaitiLngLat(p.currentLocation) && OA.inArea(areas, c[0], c[1], now);
+    });
   }
   if (!candidates.length) return null;
   const busy = await require('./driverBusy').busyUsers(candidates);
@@ -100,7 +121,7 @@ async function offerToNextDriver(ride, io) {
   const pickupLngLat = [lng(ride.pickup.coordinates), lat(ride.pickup.coordinates)];
   // never re-offer to a driver who already accepted this job and dropped it
   const profile = await findNearestDriver(pickupLngLat, (ride.attemptedDrivers || []).concat(ride.droppedBy || []),
-    await lockedDrivers(ride.store));
+    await lockedDrivers(ride.store), ride.source === 'parcel' && ride.wideSearchAt ? WIDE_RADIUS_M : SEARCH_RADIUS_M);
 
   if (!profile || !profile.user) {
     ride.offeredTo = null;
@@ -364,6 +385,9 @@ module.exports = {
   alertNoDriver,
   LOCATION_FRESH_MS,
   NO_DRIVER_ALERT_MS,
+  SEARCH_RADIUS_M,
+  WIDE_RADIUS_M,
+  inHaitiLngLat,
   offerToNextDriver,
   declineOffer,
   dispatchTick,

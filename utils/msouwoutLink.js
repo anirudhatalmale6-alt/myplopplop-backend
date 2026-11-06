@@ -33,6 +33,8 @@ const busy = (ids) => ask('POST', '/api/rides/internal/busy', { driver_ids: ids 
 /* the one-job lock MsouWout holds (its services/jobLock.js); job ids are "mpp:<ride id>" */
 const lock = (id, job) => ask('POST', '/api/rides/internal/lock', { driver_id: id, job_id: job }, 8000);
 const unlock = (id, job) => ask('POST', '/api/rides/internal/unlock', { driver_id: id, job_id: job }, 8000);
+/* 6 Nov 2026: the approved operating areas (MsouWout green zones + hours), for the wider package search */
+const operatingAreas = () => ask('GET', '/api/rides/internal/operating-areas', null, 8000);
 const document = (id, type) => ask('GET', '/api/drivers/internal/' + encodeURIComponent(id) + '/document/' + encodeURIComponent(type));
 
 /* "Jean Baptiste" vs "JEAN  BAPTISTE Junior": the shorter name's words all
@@ -50,4 +52,4 @@ function sameName(a, b) {
 }
 const VEHICLE = { motorcycle: 'moto', moto: 'moto', car: 'car', truck: 'truck', van: 'truck' };
 
-module.exports = { verify, status, busy, lock, unlock, document, sameName, VEHICLE, BASE };
+module.exports = { verify, status, busy, lock, unlock, document, operatingAreas, sameName, VEHICLE, BASE };

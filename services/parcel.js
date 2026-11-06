@@ -31,6 +31,8 @@ const DRIVER_HOLD_HOURS = 24;          // same hold as a shop delivery's earning
 const GIVE_UP_HOURS = 24;              // an unpaid parcel is closed after this
 /* 5 Nov 2026: paid, and no driver has accepted it for this long -> cancelled, refund OWED. */
 const NO_DRIVER_REFUND_MIN = Number(process.env.PARCEL_NO_DRIVER_MIN) || 30;
+/* 6 Nov 2026 (Koli option A): at 15 minutes with no driver -> red alert in Jennifer's console + wider search. */
+const WIDE_AFTER_MIN = Number(process.env.PARCEL_WIDE_AFTER_MIN) || 15;
 
 /* Haiti, generously: a coordinate outside this box is a typo or a trick. */
 function inHaiti(lat, lng) {
@@ -104,6 +106,41 @@ async function oweRefund(rideId, fromStatuses, reason, cancelledBy, io) {
     for (const a of admins) require('../routes/notifications').sendPushToUser(a._id, 'Koli pou ranbouse', done.refund.amount + ' HTG · ' + reason, { url: '/admin/dashboard.html' }).catch(function () {});
   } catch (e) { /* idem */ }
   return done;
+}
+
+/* 6 Nov 2026, Jeffery: "Add the 15-minute alert for Jennifer and expand the driver search, but only to drivers within
+   our approved service area and safe operating limits." Paid, still searching after WIDE_AFTER_MIN minutes: marked
+   once (wideSearchAt, conditional update - two ticks cannot both do it), every driver who already let it pass is
+   offered it again (attemptedDrivers cleared; a driver who ACCEPTED and dropped it stays excluded), and the search
+   uses the wider radius (deliveryDispatch WIDE_RADIUS_M, inside Haiti, same eligibility). The administrators get a
+   push; Jennifer's console lists it in red with the nearest drivers to call (routes/internalJobs.js
+   /parcels-waiting). The 30-minute automatic refund is unchanged. */
+async function widenSweep(io, now) {
+  const t = now || new Date();
+  const due = await Ride.find({ source: 'parcel', status: 'requested', paymentStatus: 'paid', driver: null, wideSearchAt: null,
+    searchingSince: { $lt: new Date(t.getTime() - WIDE_AFTER_MIN * 60000) } }).select('_id').limit(50);
+  let n = 0;
+  for (const r of due) {
+    const ride = await Ride.findOneAndUpdate({ _id: r._id, status: 'requested', driver: null, wideSearchAt: null },
+      { $set: { wideSearchAt: t, attemptedDrivers: [] } }, { new: true });
+    if (!ride) continue;
+    n++;
+    try {
+      await require('../models/ActivityLog').create({ action: 'parcel.no_driver_15', targetType: 'Ride', targetId: ride._id,
+        targetLabel: 'Koli ' + String(ride._id).slice(-6), detail: { since: ride.searchingSince, amount: ride.fare && ride.fare.total } });
+    } catch (e) { /* the log is not the search */ }
+    try {
+      const admins = await User.find({ role: 'admin' }).select('_id').limit(20);
+      for (const a of admins) require('../routes/notifications').sendPushToUser(a._id, '🚨 Koli san chofè depi ' + WIDE_AFTER_MIN + ' minit',
+        'Koli ' + String(ride._id).slice(-6) + ' · ' + ((ride.pickup && ride.pickup.address) || '') + '. Rele yon chofè.', { url: '/admin/dashboard.html' }).catch(function () {});
+    } catch (e) { /* push is best effort */ }
+    if (!ride.offeredTo) {
+      try { await require('./deliveryDispatch').offerToNextDriver(ride, io); }
+      catch (e) { console.error('[PARCEL] wide search failed for ' + ride._id + ':', e.message); }
+    }
+    console.log('[PARCEL] no driver after ' + WIDE_AFTER_MIN + ' min - wider search + alert: ride ' + ride._id);
+  }
+  return n;
 }
 
 /* Paid, still searching, nobody took it for NO_DRIVER_REFUND_MIN minutes. A driver who accepts in the
@@ -214,8 +251,9 @@ async function tick(io, opts) {
   await Transaction.updateMany({ type: 'payment', status: 'pending', createdAt: { $lt: since },
     ride: { $in: (await Ride.find({ source: 'parcel', status: 'cancelled', createdAt: { $lt: since } }).select('_id').limit(500)).map(function (r) { return r._id; }) } },
     { $set: { status: 'failed' } });
+  const widened = await widenSweep(io, now);
   const noDriverRefunds = await noDriverSweep(io, now);
-  return { confirmed, expired, paidAfterCancel, noDriverRefunds };
+  return { confirmed, expired, paidAfterCancel, widened, noDriverRefunds };
 }
 
 /* ─── 3. at the door ──────────────────────────────────────────────────────
@@ -279,5 +317,5 @@ function publicView(ride, driverLngLat) {
 }
 
 module.exports = { inHaiti, haversineKm, newPin, newTrackToken, confirmPaid, checkPending, gatewaySaysPaid, tick, complete, publicView,
-  oweRefund, noDriverSweep, NO_DRIVER_REFUND_MIN,
+  oweRefund, noDriverSweep, NO_DRIVER_REFUND_MIN, widenSweep, WIDE_AFTER_MIN,
   MAX_PIN_ATTEMPTS, DRIVER_HOLD_HOURS, GIVE_UP_HOURS };

@@ -41,6 +41,9 @@ const rideSchema = new mongoose.Schema({
   droppedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   searchingSince: Date,            // when the current search for a driver began
   noDriverAlertedAt: Date,
+  /* 6 Nov 2026 (Koli option A): a paid parcel still without a driver after 15 minutes - the search was widened
+     (PARCEL_WIDE_RADIUS_KM) and offered again to every eligible driver, and Jennifer's console shows it in red. */
+  wideSearchAt: Date,
   // A delivery whose driver pay is 0 (a shop's free delivery, or the 2nd shop
   // of a basket - the trip was charged once). Never offered to drivers until
   // an admin sets the pay (POST /api/admin-ops/rides/:id/driver-pay).

@@ -398,10 +398,21 @@ async function commissionForTicketSale(opts) {
 
   if (!pk) return { commissioned: false, reason: 'no_phone' };
   if (!isFinite(amount) || amount <= 0) return { commissioned: false, reason: 'no_amount' };
+  /* 6 Nov 2026, Jeffery: the 30% training commission only for an Ajan holding an ACTIVE, VERIFIED LajanMaker badge.
+     o.allowedCodes comes from HaitiBiznis (it holds the badges): the Ajan who WOULD be credited - the one already
+     attached to this buyer, or the code on the link - must be one of them. If not, nothing is attached and nothing is
+     paid here (reason not_certified): the caller falls back to its standard rule. Without allowedCodes: unchanged. */
+  const allowed = Array.isArray(o.allowedCodes) ? new Set(o.allowedCodes.map(normalizeCode).filter(Boolean)) : null;
 
   try {
     let referral = await activeReferralForPhone(o.phone, platform);
     let attached = null;
+    if (allowed && referral && !allowed.has(normalizeCode(referral.koutyeCode))) {
+      return { commissioned: false, attached: false, reason: 'not_certified', koutyeCode: referral.koutyeCode };
+    }
+    if (allowed && !referral && o.koutyeCode && !allowed.has(normalizeCode(o.koutyeCode))) {
+      return { commissioned: false, attached: false, reason: 'not_certified', koutyeCode: normalizeCode(o.koutyeCode) };
+    }
 
     if (!referral && o.koutyeCode) {
       attached = await attachReferral({

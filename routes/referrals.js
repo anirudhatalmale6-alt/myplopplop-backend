@@ -269,10 +269,12 @@ router.post('/course-sale', async (req, res) => {
 
   try {
     const { koutyeCode, phone, name, email, amount, transactionId, description } = req.body || {};
+    /* 6 Nov 2026: Ajan codes on an active, verified LajanMaker badge (HaitiBiznis holds the badges) */
+    const allowedCodes = Array.isArray(req.body && req.body.allowedCodes) ? req.body.allowedCodes.slice(0, 20000).map(String) : undefined;
     const out = await referralService.commissionForTicketSale({
       koutyeCode, phone, name, email,
       amount: amount,
-      transactionId: transactionId,
+      transactionId: transactionId, allowedCodes,
       serviceType: 'training', platform: 'lajanmaker',
       description: description || 'LajanMaker training'
     });
