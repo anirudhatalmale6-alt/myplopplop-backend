@@ -3,7 +3,8 @@
                                          ("A driver should only receive new requests when available.")
    2. GET  /parcel-refunds?status=       Jennifer's console (through haitibiznis-api): paid parcels to pay back.
    3. POST /parcel-refunds/:id/refunded  she paid it back: who, and the MonCash/NatCash/Stripe reference.
-   4. GET  /driver-earnings?msouwout_id= MsouWout's Revni tab: his delivery + parcel earnings (read-only). */
+   4. GET  /driver-earnings?msouwout_id= MsouWout's Revni tab: his delivery + parcel earnings (read-only).
+   5. POST /commission-status            Jennifer's console: payout status of the Ajan commission on given tickets. */
 const express = require('express');
 const Ride = require('../models/Ride');
 const DriverProfile = require('../models/DriverProfile');
@@ -108,6 +109,21 @@ router.post('/parcel-refunds/:id/refunded', async (req, res) => {
     } catch (e) { /* the log is not the refund */ }
     try { await require('./notifications').sendPushToUser(done.customer._id, 'Ranbousman fèt', 'Nou remèt ou ' + done.refund.amount + ' HTG pou koli a. Ref: ' + reference, {}); } catch (e) {}
     res.json({ ok: true, refund: view(done.toObject()) });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+
+/* 5. POST /commission-status {transactionIds:[...]}  6 Nov 2026, Jeffery: "Make sure Jennifer can see the referring
+   Ajan, confirmed payment, commission amount, and payout status." Tikè Lakay keeps the sale; the payout status of the
+   Ajan's commission lives here. Read-only, at most 500 references per call. */
+router.post('/commission-status', async (req, res) => {
+  try {
+    const KoutyeCommission = require('../models/KoutyeCommission');
+    const ids = (Array.isArray(req.body && req.body.transactionIds) ? req.body.transactionIds : []).map(String).filter(Boolean).slice(0, 500);
+    if (!ids.length) return res.json({ commissions: [] });
+    const rows = await KoutyeCommission.find({ transactionId: { $in: ids } })
+      .select('transactionId amount status platform commissionRate paidAt createdAt koutye').populate('koutye', 'koutyeCode').lean();
+    res.json({ commissions: rows.map((c) => ({ transactionId: c.transactionId, amount: c.amount, status: c.status, platform: c.platform,
+      rate: c.commissionRate, paidAt: c.paidAt || null, at: c.createdAt, koutyeCode: (c.koutye && c.koutye.koutyeCode) || '' })) });
   } catch (e) { res.status(500).json({ error: 'server' }); }
 });
 
