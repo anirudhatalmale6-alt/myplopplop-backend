@@ -224,7 +224,7 @@ async function tick(io, opts) {
    (driverCreditedAt claim) and held 24 h, exactly like a shop delivery. */
 async function complete(ride, driverUser, pin) {
   if ((ride.pinAttempts || 0) >= MAX_PIN_ATTEMPTS) {
-    return { ok: false, code: 423, message: 'Twòp kòd ki pa bon. Yon administratè dwe tcheke livrezon sa a.' };
+    return { ok: false, code: 423, codeName: 'pin_locked', message: 'Twòp kòd ki pa bon. Yon administratè dwe tcheke livrezon sa a.' };
   }
   if (String(pin || '').trim() !== String(ride.pin)) {
     await Ride.updateOne({ _id: ride._id }, { $inc: { pinAttempts: 1 } });
