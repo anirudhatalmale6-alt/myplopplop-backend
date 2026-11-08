@@ -354,7 +354,29 @@ async function approveRefund(refund, admin, note) {
       reference: 'REFUND-' + r.orderNumber, order: r.order, description: 'Refund for order ' + r.orderNumber });
     await Refund.updateOne({ _id: r._id }, { $set: { status: 'paid', payoutReference: 'WALLET' }, $push: { history: { by: admin._id, byName: admin.name, action: 'paid', note: 'returned to the customer wallet' } } });
   }
-  if (order && r.amount >= order.total) await Order.updateOne({ _id: order._id }, { $set: { paymentStatus: 'refunded', payoutStatus: order.status === 'delivered' ? 'refunded' : order.payoutStatus } });
+  let stripeOut = null;
+  if (r.method === 'card') {
+    /* 8 Nov 2026: a card payment goes back to the SAME card through Stripe, automatically.
+       If Stripe refuses (key without refund permission, payment too old...) the refund stays
+       "approved" and the administrator is told; nothing is marked paid that was not. */
+    const t = await Transaction.findOne({ reference: r.paymentRef, method: 'card', type: 'payment', status: 'completed', stripePaymentIntent: { $exists: true } }).sort({ createdAt: -1 });
+    if (!t) stripeOut = { ok: false, error: 'no Stripe payment found for ' + r.paymentRef };
+    else stripeOut = await require('../utils/stripe').refund(t.stripePaymentIntent, r.amount, 'htg', 'mpp-refund-' + r._id, { refund: String(r._id), order: r.orderNumber });
+    if (stripeOut.ok) {
+      await Transaction.create({ user: r.customer, type: 'refund', amount: r.amount, currency: 'HTG', method: 'card', status: 'completed',
+        reference: stripeOut.id, order: r.order, description: 'Card refund for order ' + r.orderNumber + ' (Stripe ' + stripeOut.id + ')' });
+      await Refund.updateOne({ _id: r._id }, { $set: { status: 'paid', payoutReference: stripeOut.id }, $push: { history: { by: admin._id, byName: admin.name, action: 'paid', note: 'refunded to the card by Stripe ' + stripeOut.id } } });
+      push(r.customer, 'Ranbousman sou kat ou', r.amount + ' HTG retounen sou kat ou pou kòmand #' + r.orderNumber + '.', { url: '/orders.html' });
+    } else {
+      console.warn('[REFUND] card refund ' + r._id + ' not sent by Stripe: ' + stripeOut.error);
+      await Refund.updateOne({ _id: r._id }, { $push: { history: { by: admin._id, byName: admin.name, action: 'stripe_failed', note: String(stripeOut.error || '').slice(0, 200) } } });
+    }
+  }
+  if (order && r.amount >= order.total && (r.method !== 'card' || (stripeOut && stripeOut.ok))) await Order.updateOne({ _id: order._id }, { $set: { paymentStatus: 'refunded', payoutStatus: order.status === 'delivered' ? 'refunded' : order.payoutStatus } });
+  if (stripeOut && !stripeOut.ok) {
+    await log(admin, 'refund.approved', order, { refund: r._id, amount: r.amount, stripe_error: stripeOut.error, note: note });
+    return { ok: true, refund: await Refund.findById(r._id), shortfall, stripe: { ok: false, error: 'Stripe did not send the refund (' + stripeOut.error + '). Refund it in the Stripe dashboard, then mark it paid with the Stripe reference.' } };
+  }
   await log(admin, 'refund.approved', order, { refund: r._id, amount: r.amount, merchantAdjustment: r.merchantAdjustment, driverAdjustment: r.driverAdjustment, shortfall: shortfall, note: note });
   return { ok: true, refund: await Refund.findById(r._id), shortfall };
 }

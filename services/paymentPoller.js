@@ -38,7 +38,7 @@ async function tick(opts) {
   if (!(LIFECYCLE_FROM instanceof Date) || isNaN(LIFECYCLE_FROM)) return { checked: 0, confirmed: 0, expired: 0, disabled: 'no start date' };
   const since = new Date(now.getTime() - GIVE_UP_HOURS * 3600 * 1000);
   const pending = await Order.find({
-    paymentStatus: 'pending', status: 'pending', paymentMethod: { $in: ['moncash', 'natcash'] },
+    paymentStatus: 'pending', status: 'pending', paymentMethod: { $in: ['moncash', 'natcash', 'card'] },
     createdAt: { $gte: since > LIFECYCLE_FROM ? since : LIFECYCLE_FROM }
   }).sort({ createdAt: 1 }).limit(300);
   const seen = new Set();
@@ -50,7 +50,7 @@ async function tick(opts) {
     const last = order.paymentCheckedAt || order.createdAt;
     if (now - last < dueAfterMin(order.paymentChecks || 0) * 60 * 1000) continue;
     let gw = null;
-    try { gw = await verify(ref); } catch (e) { gw = null; }
+    try { gw = order.paymentMethod === 'card' ? await (o.verifyCard || require('../routes/payments').verifyOrderCard)(order) : await verify(ref); } catch (e) { gw = null; }
     checked++;
     await Order.updateMany({ customer: order.customer, $or: [{ paymentGroup: ref }, { orderNumber: ref }] },
       { $set: { paymentCheckedAt: now }, $inc: { paymentChecks: 1 } });
@@ -63,9 +63,9 @@ async function tick(opts) {
   const stale = await Order.find({ paymentStatus: 'pending', status: 'pending', createdAt: { $lt: since, $gte: LIFECYCLE_FROM } }).limit(100);
   let expired = 0;
   for (const order of stale) {
-    if (order.paymentMethod === 'moncash' || order.paymentMethod === 'natcash') {
+    if (order.paymentMethod === 'moncash' || order.paymentMethod === 'natcash' || order.paymentMethod === 'card') {
       let gw = null;
-      try { gw = await verify(order.paymentGroup || order.orderNumber); } catch (e) { gw = null; }
+      try { gw = order.paymentMethod === 'card' ? await (o.verifyCard || require('../routes/payments').verifyOrderCard)(order) : await verify(order.paymentGroup || order.orderNumber); } catch (e) { gw = null; }
       if (gw && gw.status === true && gw.trans_status === 'ok') {
         const out = await lifecycle.confirmPayment(order, gw, { io: o.io, source: 'server_poller_final' });
         if (out.ok) { confirmed += out.confirmed.length; continue; }

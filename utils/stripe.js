@@ -146,4 +146,31 @@ async function confirmCheckout(sessionId, expectedAmount, currency) {
   };
 }
 
-module.exports = { configured, createCheckout, confirmCheckout, toMinorUnit };
+/* ─── refund (8 Nov 2026, Jeffery: "test the full payment and refund process") ───
+   Gives money back on the card that paid, through Stripe - never "by hand".
+   amount in HTG (major units); omitted = the whole payment. The idempotency key
+   makes a double click / retry return the SAME refund instead of paying twice.
+   ⛔ Needs "Refunds: write" on the restricted key; without it Stripe answers 403
+   and the caller leaves the refund for an administrator. */
+async function refund(paymentIntent, amount, currency, idemKey, metadata) {
+  if (!configured()) return { ok: false, error: 'Stripe is not configured' };
+  const body = { payment_intent: paymentIntent, metadata: metadata || {} };
+  if (amount != null) body.amount = toMinorUnit(amount, currency || 'htg');
+  const opts = {
+    method: 'POST',
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(KEY() + ':').toString('base64'),
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Idempotency-Key': String(idemKey || ('refund-' + paymentIntent + '-' + body.amount)).slice(0, 255)
+    },
+    body: form(body).join('&')
+  };
+  try {
+    const r = await fetch(API + '/refunds', opts);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, status: r.status, error: (data.error && data.error.message) || ('Stripe ' + r.status) };
+    return { ok: true, id: data.id, status: data.status, amount: data.amount, raw: data };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+module.exports = { configured, createCheckout, confirmCheckout, toMinorUnit, refund };

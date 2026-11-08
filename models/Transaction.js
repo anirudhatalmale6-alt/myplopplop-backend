@@ -51,7 +51,8 @@ const transactionSchema = new mongoose.Schema({
   earningOf: { type: String, enum: ['merchant', 'driver'] },
   order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
   // A card payment: the Stripe Checkout Session it was paid through.
-  stripeSessionId: { type: String, index: true, sparse: true }
+  stripeSessionId: { type: String, index: true, sparse: true },
+  stripePaymentIntent: String   // 8 Nov 2026: kept when a card basket is confirmed, so a refund goes back to that card
 }, {
   timestamps: true
 });

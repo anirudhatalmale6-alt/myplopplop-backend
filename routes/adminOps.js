@@ -29,7 +29,7 @@ async function act(req, res, fn) {
     if (!r) return res.status(404).json({ success: false, message: 'Refund not found' });
     const out = await fn(r);
     if (!out.ok) return res.status(out.code || 409).json({ success: false, message: out.message });
-    res.json({ success: true, data: out.refund, shortfall: out.shortfall });
+    res.json({ success: true, data: out.refund, shortfall: out.shortfall, stripe: out.stripe });
   } catch (e) { console.error('[REFUND]', e.message); res.status(500).json({ success: false, message: 'Server error' }); }
 }
 router.post('/refunds/:id/approve', (req, res) => act(req, res, r => lifecycle.approveRefund(r, req.user, req.body && req.body.note)));

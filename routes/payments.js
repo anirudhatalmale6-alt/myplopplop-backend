@@ -75,7 +75,8 @@ router.post('/order/verify', protect, async (req, res) => {
       return res.json({ success: true, alreadyPaid: true, paymentStatus: 'paid' });
     }
     const ref = order.paymentGroup || order.orderNumber;
-    const result = await verifySolutionIPPayment(ref);
+    /* 8 Nov 2026: a card basket is confirmed with STRIPE (never SolutionIP, never the browser) */
+    const result = order.paymentMethod === 'card' ? await verifyOrderCard(order) : await verifySolutionIPPayment(ref);
     const out = await lifecycle.confirmPayment(order, result, { io: req.app.get('io'), source: 'customer_return' });
     if (!out.ok) {
       return res.status(400).json({
@@ -578,5 +579,64 @@ router.post('/admin/verify', protect, async (req, res) => {
   }
 });
 
+/* ═══ SHOP ORDERS BY CARD (8 Nov 2026) ═════════════════════════════════════
+   Jeffery: "Card payments must be linked to the correct order and confirmed
+   securely by Stripe before an order is marked paid." The old card button was a
+   flat $1 payment link (switched off 4 Oct). Now:
+   - the SERVER computes the amount from the basket it holds (never the page);
+   - a Stripe Checkout Session carries the basket reference + order ids;
+   - "paid" only when Stripe says paid AND amount_total == the basket total,
+     through the same orderLifecycle.confirmPayment as MonCash/NatCash (atomic,
+     safe to call twice: the customer's return and the poller can race). */
+const CARD_ORDER_PAGE = 'https://myplopplop.com/checkout.html';
+router.get('/order/methods', (req, res) => {
+  res.json({ success: true, moncash: true, natcash: true, card: require('../utils/stripe').configured(), cardMin: CARD_MIN_HTG });
+});
+// POST /api/payments/order/card/start  { orderId }  -> { paymentUrl }
+router.post('/order/card/start', protect, async (req, res) => {
+  try {
+    const Order = require('../models/Order');
+    const lifecycle = require('../services/orderLifecycle');
+    const stripe = require('../utils/stripe');
+    if (!stripe.configured()) return res.status(503).json({ success: false, message: 'Kat pa disponib kounye a. Chwazi MonCash oswa NatCash.' });
+    const order = await Order.findById(req.body && req.body.orderId);
+    if (!order || String(order.customer) !== String(req.user._id)) return res.status(404).json({ success: false, message: 'Order not found' });
+    const { group, orders } = await lifecycle.basketOf(order);
+    const live = orders.filter(function (x) { return x.status !== 'cancelled'; });
+    if (!live.length || live.some(function (x) { return x.paymentStatus === 'paid'; })) return res.status(409).json({ success: false, code: 'not_payable', message: 'Kòmand sa a deja peye oswa anile.' });
+    const amount = live.reduce(function (s, x) { return s + (Number(x.total) || 0); }, 0);
+    if (amount < CARD_MIN_HTG) return res.status(400).json({ success: false, message: 'Pou yon kat, minimòm nan se ' + CARD_MIN_HTG + ' HTG. Chwazi MonCash oswa NatCash.' });
+    const s = await stripe.createCheckout({ amount, currency: 'HTG', label: 'MyPlopPlop — Kòmand #' + group, reference: group,
+      successUrl: CARD_ORDER_PAGE + '?card=1', cancelUrl: CARD_ORDER_PAGE + '?card=0',
+      metadata: { kind: 'order', group: group, orders: live.map(function (x) { return String(x._id); }).join(',').slice(0, 480) } });
+    if (!s.ok) return res.status(502).json({ success: false, message: 'Peman kat la pa t ka kòmanse. Eseye ankò oswa chwazi MonCash.' });
+    await Transaction.create({ user: req.user._id, order: order._id, type: 'payment', amount, method: 'card', status: 'pending',
+      reference: group, stripeSessionId: s.id, description: 'Shop order ' + group + ' by card' });
+    await Order.updateMany({ _id: { $in: live.map(function (x) { return x._id; }) }, paymentStatus: { $ne: 'paid' } }, { $set: { paymentMethod: 'card' } });
+    res.json({ success: true, paymentUrl: s.url, reference: group });
+  } catch (error) {
+    console.error('Order card start error:', error);
+    res.status(500).json({ success: false, message: 'Peman kat la pa t ka kòmanse.' });
+  }
+});
+/* Ask Stripe about the basket's card session(s). Answers in the gateway shape
+   orderLifecycle.confirmPayment expects. Only a paid session whose amount is
+   exactly the one we asked for counts; the payment intent is kept for refunds. */
+async function verifyOrderCard(order) {
+  const ref = order.paymentGroup || order.orderNumber;
+  const stripe = require('../utils/stripe');
+  const txs = await Transaction.find({ reference: ref, method: 'card', type: 'payment', stripeSessionId: { $exists: true } }).sort({ createdAt: -1 }).limit(5);
+  for (const t of txs) {
+    const c = await stripe.confirmCheckout(t.stripeSessionId, t.amount, 'htg');
+    if (c && c.ok && c.paid && c.reference === ref) {
+      await Transaction.updateOne({ _id: t._id }, { $set: { status: 'completed', stripePaymentIntent: c.payment_intent } });
+      return { status: true, trans_status: 'ok', montant: t.amount, method: 'card', reference: ref, payment_intent: c.payment_intent };
+    }
+    if (c && c.ok && c.stripe_paid && !c.amount_matches) console.warn('[CARD] ' + ref + ': Stripe paid ' + c.amount_total + ' but we asked ' + t.amount + ' - NOT confirmed');
+  }
+  return { status: true, trans_status: 'pending' };
+}
+
 module.exports = router;
 module.exports.verifySolutionIPPayment = verifySolutionIPPayment;
+module.exports.verifyOrderCard = verifyOrderCard;
