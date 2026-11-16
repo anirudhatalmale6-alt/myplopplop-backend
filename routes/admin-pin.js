@@ -593,13 +593,20 @@ router.post('/referrals/attach', async (req, res) => {
     for (const id of ids) {
       const u = await User.findById(id).select('name phone email').lean();
       if (!u) { results.push({ id: id, ok: false, reason: 'no such person' }); continue; }
+      /* 16 Nov 2026: a shop OWNER attached here is a merchant (the report said "customer"), and the shop shows its Ajan */
+      const Store = require('../models/Store');
+      const shop = platform === 'myplopplop' ? await Store.findOne({ owner: u._id }).select('name verification.agentCode').lean() : null;
       const r = await referral.attachReferral({
         code: code, platform: platform, user: u._id,
-        name: u.name, phone: u.phone, email: u.email,
-        entityType: 'customer',
+        name: shop ? shop.name : u.name, phone: u.phone, email: u.email,
+        entityType: shop ? 'merchant' : 'customer',
         /* so the ledger shows HOW this one was created */
         source: 'attached by admin on ' + new Date().toISOString().slice(0, 10)
       });
+      if (r.attached && shop) {
+        await Store.updateMany({ owner: u._id, $or: [{ 'verification.agentCode': { $exists: false } }, { 'verification.agentCode': '' }] },
+          { $set: { 'verification.agentCode': r.referral.koutyeCode } });
+      }
       results.push({
         id: id, name: u.name, phone: u.phone,
         ok: !!r.attached, reason: r.reason,

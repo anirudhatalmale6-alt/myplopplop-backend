@@ -14,6 +14,8 @@ const MerchantDocument = require('../models/MerchantDocument');
 const storesRouter = require('./stores');
 const merchantVerify = require('../services/merchantVerify');
 let Koutye = null; try { Koutye = require('../models/Koutye'); } catch (e) { /* optional */ }
+let KoutyeReferral = null; try { KoutyeReferral = require('../models/KoutyeReferral'); } catch (e) { /* optional */ }
+const referralService = require('../services/referral');
 
 const ID_RE = /^[0-9a-fA-F]{24}$/;
 const NEED = ['storefront', 'owner_id'];
@@ -27,9 +29,28 @@ async function agentNames(codes) {
   ks.forEach((k) => { out[String(k.koutyeCode).toUpperCase()] = (k.user && k.user.name) || ''; });
   return out;
 }
-function view(s, docs, names, products) {
+/* 16 Nov 2026 (Jeffery: "Jennifer can see which merchants each agent recruited, including registration dates and
+   commission eligibility"): the referral that PAYS on this shop's orders is the one on its OWNER (orderLifecycle pays
+   payCommissionForUser(shop.owner)) - shown here with its dates and whether it still earns. */
+async function referralsFor(owners) {
+  const out = {};
+  if (!KoutyeReferral || !owners.length) return out;
+  const rs = await KoutyeReferral.find({ platform: 'myplopplop', 'referredEntity.userId': { $in: owners } })
+    .select('koutyeCode startDate expiryDate status commissionCount totalCommissionEarned sourceDescription referredEntity.userId').lean();
+  rs.forEach((r) => { out[String(r.referredEntity.userId)] = r; });
+  return out;
+}
+function refView(r) {
+  if (!r) return null;
+  const until = r.expiryDate ? new Date(r.expiryDate) : null;
+  return { code: String(r.koutyeCode || '').toUpperCase(), since: r.startDate || null, until: until,
+    earning: r.status === 'active' && !!until && until > new Date(), status: r.status,
+    commissions: r.commissionCount || 0, earned: r.totalCommissionEarned || 0, how: r.sourceDescription || '' };
+}
+function view(s, docs, names, products, ref) {
   const v = s.verification || {};
-  const code = String(v.agentCode || '').toUpperCase();
+  /* the referral is the truth for commissions; an older store may have it without the stamp */
+  const code = String(v.agentCode || (ref && ref.koutyeCode) || '').toUpperCase();
   return {
     id: String(s._id), name: s.name, slug: s.slug, category: s.category, phone: s.phone || '', description: s.description || '',
     address: (s.address && s.address.street) || '', status: s.status, isVerified: !!s.isVerified, createdAt: s.createdAt,
@@ -41,7 +62,8 @@ function view(s, docs, names, products) {
     /* 4 Nov 2026 (PATENTE) */
     patente: storesRouter.patenteView(v.patente), assist: v.assist && v.assist.asked ? { state: v.assist.state || 'new', at: v.assist.at, note: v.assist.note || '', by: v.assist.by || '' } : null,
     trust: s.trust ? s.trust.level : '', licence: merchantVerify.LICENSED[s.category] || [],
-    licenceMissing: merchantVerify.licenceMissing(s.category, v, docs || []), city: (s.address && s.address.city) || ''
+    licenceMissing: merchantVerify.licenceMissing(s.category, v, docs || []), city: (s.address && s.address.city) || '',
+    referral: refView(ref)
   };
 }
 
@@ -54,8 +76,10 @@ router.get('/', async (req, res) => {
     const byStore = {}; docs.forEach((d) => { (byStore[String(d.store)] = byStore[String(d.store)] || []).push(d.type); });
     const pc = await Product.aggregate([{ $match: { store: { $in: ids } } }, { $group: { _id: '$store', n: { $sum: 1 } } }]);
     const prod = {}; pc.forEach((x) => { prod[String(x._id)] = x.n; });
-    const names = await agentNames([...new Set(rows.map((s) => String((s.verification && s.verification.agentCode) || '').toUpperCase()).filter(Boolean))]);
-    const all = rows.map((s) => view(s, byStore[String(s._id)], names, prod[String(s._id)]));
+    const refs = await referralsFor(rows.map((s) => s.owner && s.owner._id).filter(Boolean));
+    const refOf = (s) => (s.owner && refs[String(s.owner._id)]) || null;
+    const names = await agentNames([...new Set(rows.map((s) => String((s.verification && s.verification.agentCode) || (refOf(s) && refOf(s).koutyeCode) || '').toUpperCase()).filter(Boolean))]);
+    const all = rows.map((s) => view(s, byStore[String(s._id)], names, prod[String(s._id)], refOf(s)));
     const counts = { pending: 0, fix: 0, approved: 0, rejected: 0, active: 0, legacy: 0, legacy_unreviewed: 0, all: all.length,
       pat_green: 0, pat_yellow: 0, pat_check: 0, pat_stale: 0, assist_new: 0, assist: 0 };
     all.forEach((m) => {
@@ -108,6 +132,31 @@ router.post('/:id/:act', async (req, res) => {
       return res.status(r.code).json(r.body);
     }
     if (!who) return res.status(400).json({ error: 'name_required' });
+    /* 16 Nov 2026 (Jeffery: "Jennifer can manually assign merchants who registered before today's fix to their rightful
+       agents"): the SAME attachReferral() as sign-up, so every rule holds - unknown/inactive code refused, an Ajan cannot
+       take his own shop, FIRST AGENT WINS (a shop already credited to someone is never moved). The 12-month window starts
+       today. The credited code is stamped on the store, as at registration. */
+    if (act === 'agent') {
+      const code = String(b.code || '').trim().toUpperCase().replace(/\s+/g, '');
+      if (!/^[A-Z0-9][A-Z0-9-]{2,31}$/.test(code)) return res.status(400).json({ error: 'code_required' });
+      const owner = s.owner ? await User.findById(s.owner).select('name phone email').lean() : null;
+      if (!owner) return res.status(409).json({ error: 'no_owner' });
+      const r = await referralService.attachReferral({ code, platform: 'myplopplop', entityType: 'merchant', user: owner._id,
+        name: s.name, phone: s.phone || owner.phone, email: owner.email,
+        source: 'Attached in the console by ' + who + ' on ' + new Date().toISOString().slice(0, 10) + ' (' + s.name + ')' });
+      if (!r.attached) {
+        if (r.reason === 'already_referred' && r.referral) {
+          const have = String(r.referral.koutyeCode || '').toUpperCase();
+          if (have !== code) return res.status(409).json({ error: 'already_referred', code: have });
+          /* same Ajan already: make sure the store shows it */
+          if (String(v.agentCode || '').toUpperCase() !== have) await Store.updateOne({ _id: s._id }, Object.assign({ $set: { 'verification.agentCode': have } }, log('agent', have + ' (deja)')));
+          return res.json({ ok: true, already: true, agentCode: have, referral: refView(r.referral) });
+        }
+        return res.status(r.reason === 'error' ? 500 : 400).json({ error: r.reason });
+      }
+      await Store.updateOne({ _id: s._id }, Object.assign({ $set: { 'verification.agentCode': r.referral.koutyeCode } }, log('agent', r.referral.koutyeCode)));
+      return res.json({ ok: true, agentCode: r.referral.koutyeCode, referral: refView(r.referral), note: 'the 12-month commission window starts today' });
+    }
     if (act === 'document') {
       const r = await storesRouter.saveVerificationDoc(s, b, 'console:' + who);
       return res.status(r.code).json(r.body);
