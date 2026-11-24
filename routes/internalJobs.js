@@ -169,4 +169,21 @@ router.post('/commission-status', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server' }); }
 });
 
+
+/* 24 Nov 2026: Tikè Lakay (haitibiznis-api) asks before attaching an appointment page to a MyPlopPlop shop:
+   is this the shop's real booking code? Answers yes/no + the shop's public name - never the code or its hash. */
+router.post('/store-booking-check', async (req, res) => {
+  try {
+    const Store = require('../models/Store');
+    const slug = String((req.body && req.body.slug) || '').trim().toLowerCase().slice(0, 120);
+    const code = String((req.body && req.body.code) || '').trim().slice(0, 32);
+    if (!slug || !code) return res.status(400).json({ ok: false, error: 'slug_and_code' });
+    const st = await Store.findOne({ slug }).select('+bookingSalt +bookingHash name slug phone logo category status');
+    if (!st || st.status !== 'active' || !Store.isServiceCategory(st.category) || !st.checkBookingCode(code)) {
+      return res.status(403).json({ ok: false, error: 'store_code_invalid' });
+    }
+    res.json({ ok: true, store: { slug: st.slug, name: st.name, phone: st.phone || '', logo: st.logo || '', category: st.category } });
+  } catch (e) { res.status(500).json({ ok: false, error: 'server' }); }
+});
+
 module.exports = router;

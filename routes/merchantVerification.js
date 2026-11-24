@@ -63,7 +63,9 @@ function view(s, docs, names, products, ref) {
     patente: storesRouter.patenteView(v.patente), assist: v.assist && v.assist.asked ? { state: v.assist.state || 'new', at: v.assist.at, note: v.assist.note || '', by: v.assist.by || '' } : null,
     trust: s.trust ? s.trust.level : '', licence: merchantVerify.LICENSED[s.category] || [],
     licenceMissing: merchantVerify.licenceMissing(s.category, v, docs || []), city: (s.address && s.address.city) || '',
-    referral: refView(ref)
+    referral: refView(ref),
+    /* 24 Nov 2026: service shop (Pran Randevou) */
+    service: Store.isServiceCategory(s.category), bookingSet: !!s.bookingSetAt, bookingSetAt: s.bookingSetAt || null
   };
 }
 
@@ -157,6 +159,18 @@ router.post('/:id/:act', async (req, res) => {
       await Store.updateOne({ _id: s._id }, Object.assign({ $set: { 'verification.agentCode': r.referral.koutyeCode } }, log('agent', r.referral.koutyeCode)));
       return res.json({ ok: true, agentCode: r.referral.koutyeCode, referral: refView(r.referral), note: 'the 12-month commission window starts today' });
     }
+    /* 24 Nov 2026 (Jeffery: barbers, salons, spas, clinics on MyPlopPlop with "Pran Randevou" through Tikè Lakay):
+       a NEW booking code for a SERVICE shop - shown once, here. Whoever creates a Tikè Lakay appointment page with
+       this shop's name + this code attaches it to the shop; a new code makes the old one stop working. */
+    if (act === 'booking-code') {
+      if (!Store.isServiceCategory(s.category)) return res.status(409).json({ error: 'not_service', category: s.category });
+      const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      const code = Array.from(require('crypto').randomBytes(8), (x) => A[x % A.length]).join('');
+      const tmp = new Store(); tmp.setBookingCode(code);   /* only the three fields - no full-document save, no hooks */
+      await Store.updateOne({ _id: s._id }, Object.assign({ $set: { bookingSalt: tmp.bookingSalt, bookingHash: tmp.bookingHash,
+        bookingSetAt: tmp.bookingSetAt } }, log('booking-code', 'new appointment code')));
+      return res.json({ ok: true, code, slug: s.slug, name: s.name });
+    }
     if (act === 'document') {
       const r = await storesRouter.saveVerificationDoc(s, b, 'console:' + who);
       return res.status(r.code).json(r.body);
@@ -202,7 +216,7 @@ router.post('/:id/:act', async (req, res) => {
         if (b[k] === undefined) continue;
         const val = String(b[k]).trim().slice(0, E[k]);
         if (k === 'name' && !val) return res.status(400).json({ error: 'name_required' });
-        if (k === 'category' && ['restaurant', 'supermarket', 'hardware', 'pharmacy', 'wholesale', 'retail', 'bakery', 'other'].indexOf(val) < 0) return res.status(400).json({ error: 'bad_category' });
+        if (k === 'category' && ['restaurant', 'supermarket', 'hardware', 'pharmacy', 'wholesale', 'retail', 'bakery', 'other', 'beauty', 'health', 'services'].indexOf(val) < 0) return res.status(400).json({ error: 'bad_category' });
         if (k === 'category' && val !== s.category && merchantVerify.LICENSED[val] && state === 'approved') {
           const have = (await MerchantDocument.find({ store: s._id }).select('type').lean()).map((d) => d.type);
           const lic = merchantVerify.licenceMissing(val, v, have);

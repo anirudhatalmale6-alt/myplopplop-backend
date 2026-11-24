@@ -24,11 +24,19 @@ const storeSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ['restaurant', 'supermarket', 'hardware', 'pharmacy', 'wholesale', 'retail', 'bakery', 'other'],
+    /* 24 Nov 2026: beauty (salon/barber/spa), health (clinic), services (consultant/training) = SERVICE shops -
+       shown with "Pran Randevou" (Tikè Lakay appointments), never sold through the cart/delivery. */
+    enum: ['restaurant', 'supermarket', 'hardware', 'pharmacy', 'wholesale', 'retail', 'bakery', 'other', 'beauty', 'health', 'services'],
     default: 'other'
   },
   logo: String,
   coverImage: String,
+  /* 24 Nov 2026: the code that lets a Tikè Lakay appointment page attach itself to this shop (salted hash only;
+     the code is shown once, to Jennifer, when she makes it). Without it anybody could publish "appointments" in a
+     real shop's name and collect the money. */
+  bookingSalt: { type: String, select: false },
+  bookingHash: { type: String, select: false },
+  bookingSetAt: Date,
   phone: String,
   email: String,
   address: {
@@ -151,5 +159,20 @@ storeSchema.pre('save', function(next) {
 storeSchema.index({ 'address.coordinates': '2dsphere' });
 storeSchema.index({ category: 1, status: 1 });
 storeSchema.index({ owner: 1 });
+
+storeSchema.statics.SERVICE_CATS = ['beauty', 'health', 'services'];
+storeSchema.statics.isServiceCategory = function (c) { return ['beauty', 'health', 'services'].indexOf(String(c || '')) >= 0; };
+const _crypto = require('crypto');
+storeSchema.methods.setBookingCode = function (raw) {
+  this.bookingSalt = _crypto.randomBytes(16).toString('hex');
+  this.bookingHash = _crypto.scryptSync(String(raw).toUpperCase(), this.bookingSalt, 32).toString('hex');
+  this.bookingSetAt = new Date();
+};
+storeSchema.methods.checkBookingCode = function (raw) {
+  if (!this.bookingSalt || !this.bookingHash || !raw) return false;
+  const a = Buffer.from(_crypto.scryptSync(String(raw).trim().toUpperCase(), this.bookingSalt, 32).toString('hex'));
+  const b = Buffer.from(this.bookingHash);
+  return a.length === b.length && _crypto.timingSafeEqual(a, b);
+};
 
 module.exports = mongoose.model('Store', storeSchema);

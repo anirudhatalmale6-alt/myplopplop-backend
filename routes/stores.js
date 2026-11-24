@@ -101,7 +101,7 @@ router.get('/:id', async function(req, res) {
 // ─── CREATE STORE (merchant) ───
 router.post('/', protect, [
   body('name').trim().notEmpty().withMessage('Store name is required'),
-  body('category').isIn(['restaurant', 'supermarket', 'hardware', 'pharmacy', 'wholesale', 'retail', 'bakery', 'other'])
+  body('category').isIn(['restaurant', 'supermarket', 'hardware', 'pharmacy', 'wholesale', 'retail', 'bakery', 'other', 'beauty', 'health', 'services'])
 ], async function(req, res) {
   try {
     var errors = validationResult(req);

@@ -44,6 +44,12 @@ router.post('/', protect, [
     if (!store || store.status !== 'active') {
       return res.status(404).json({ success: false, message: 'Store not found or inactive' });
     }
+    /* 24 Nov 2026: a SERVICE shop (barber, spa, clinic...) books through "Pran Randevou" (Tikè Lakay). An order here
+       would offer delivery and could send a driver for a massage. */
+    if (Store.isServiceCategory(store.category)) {
+      return res.status(400).json({ success: false, code: 'service_store',
+        message: 'Biznis sa a se yon biznis sèvis: pran randevou sou paj li. / This is a service business - book an appointment on its page.' });
+    }
 
     // Build order items with current prices
     var orderItems = [];
